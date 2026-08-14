@@ -1,0 +1,6 @@
+{
+  "name": "Voxnote",
+  "description": "Voxnote is a mobile-first voice notes app: record memos and meetings, scan documents, and let AI turn them into organized summaries and action items.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

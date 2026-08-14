@@ -1,0 +1,28 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="55%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#6D28D9"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="28%" cy="20%" r="65%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="118" fill="url(#bgGrad)"/>
+  <rect width="512" height="512" rx="118" fill="url(#sheen)"/>
+
+  <!-- soundwave mark -->
+  <g fill="#FFFFFF">
+    <rect x="94"  y="196" width="42" height="120" rx="21" fill-opacity="0.85"/>
+    <rect x="164" y="146" width="42" height="220" rx="21" fill-opacity="0.94"/>
+    <rect x="234" y="96"  width="44" height="320" rx="22"/>
+    <rect x="306" y="146" width="42" height="220" rx="21" fill-opacity="0.94"/>
+    <rect x="376" y="196" width="42" height="120" rx="21" fill-opacity="0.85"/>
+  </g>
+
+  <!-- AI spark accent -->
+  <path d="M 397 108 L 405 128 L 425 136 L 405 144 L 397 164 L 389 144 L 369 136 L 389 128 Z" fill="#FBBF24"/>
+</svg>
