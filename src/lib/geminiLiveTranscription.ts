@@ -125,7 +125,13 @@ export async function startGeminiLiveTranscription(
 
   try {
     const token = await getLiveToken();
-    const ai = new GoogleGenAI({ apiKey: token });
+    // Ephemeral Live tokens are scoped to the Live API version. Use the same
+    // explicit v1beta version on the browser connection as the provisioning
+    // endpoint instead of relying on the SDK default.
+    const ai = new GoogleGenAI({
+      apiKey: token,
+      httpOptions: { apiVersion: 'v1beta' },
+    });
 
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
