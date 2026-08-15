@@ -46,6 +46,11 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   const animationFrameRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  // Mirrors isRecording/isPaused for use inside event handlers set up once
+  // when recording starts — those closures would otherwise see stale
+  // values and never know recording has since paused/stopped.
+  const isRecordingActiveRef = useRef(false);
+  const isPausedRef = useRef(false);
 
   // Initialize Web Speech API & Mic Stream when opened
   useEffect(() => {
@@ -66,6 +71,8 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   const startRecordingProcess = async () => {
     setIsRecording(true);
     setIsPaused(false);
+    isRecordingActiveRef.current = true;
+    isPausedRef.current = false;
 
     // Timer
     timerRef.current = setInterval(() => {
@@ -95,6 +102,24 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
 
         recognition.onerror = (e: any) => {
           console.warn('Speech recognition warning:', e.error);
+          // 'no-speech' and 'aborted' are normal/recoverable — onend will
+          // fire right after and trigger a restart below. Anything more
+          // serious (e.g. 'not-allowed') isn't worth looping retries on.
+        };
+
+        recognition.onend = () => {
+          // Chrome's SpeechRecognition stops itself periodically even in
+          // continuous mode — after silence, roughly every ~60s of use, or
+          // under audio/CPU contention (more likely now that a MediaRecorder
+          // is also continuously encoding audio in the background). Restart
+          // it immediately as long as we're still actively recording.
+          if (isRecordingActiveRef.current && !isPausedRef.current) {
+            try {
+              recognition.start();
+            } catch (e) {
+              // Already started / transient — ignore, next onend will retry.
+            }
+          }
         };
 
         recognition.start();
@@ -203,6 +228,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
 
   const stopRecordingProcess = () => {
     setIsRecording(false);
+    isRecordingActiveRef.current = false;
     if (timerRef.current) clearInterval(timerRef.current);
     if ((window as any)._simInterval) clearInterval((window as any)._simInterval);
 
@@ -234,6 +260,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   const togglePause = () => {
     if (isPaused) {
       setIsPaused(false);
+      isPausedRef.current = false;
       timerRef.current = setInterval(() => {
         setSeconds((prev) => prev + 1);
       }, 1000);
@@ -249,6 +276,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       }
     } else {
       setIsPaused(true);
+      isPausedRef.current = true;
       if (timerRef.current) clearInterval(timerRef.current);
       if (recognitionRef.current) {
         try {
@@ -270,6 +298,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   };
 
   const handleFinishAndSynthesize = async () => {
+    isRecordingActiveRef.current = false;
     setIsProcessingAI(true);
     setErrorMsg(null);
 
