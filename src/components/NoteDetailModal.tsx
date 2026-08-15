@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   X,
   ArrowLeft,
@@ -22,7 +22,8 @@ import {
   Zap,
   Download,
   FileDown,
-  ChevronDown
+  ChevronDown,
+  AlertCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Note, ActionItem } from '../types';
@@ -36,6 +37,13 @@ interface NoteDetailModalProps {
   onTogglePin: (noteId: string) => void;
 }
 
+const formatTime = (totalSecs: number) => {
+  if (!isFinite(totalSecs) || totalSecs < 0) totalSecs = 0;
+  const mins = Math.floor(totalSecs / 60);
+  const secs = Math.floor(totalSecs % 60);
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
 export const NoteDetailModal: React.FC<NoteDetailModalProps> = ({
   note,
   onClose,
@@ -43,18 +51,45 @@ export const NoteDetailModal: React.FC<NoteDetailModalProps> = ({
   onDeleteNote,
   onTogglePin,
 }) => {
-  if (!note) return null;
-
+  // NOTE: all hooks must run unconditionally, on every render — the
+  // `if (!note) return null` guard below happens AFTER every hook call.
+  // (It previously happened before them, which is a Rules of Hooks
+  // violation: React requires the same hooks in the same order on every
+  // render, and this modal's `note` prop can flip between null and a real
+  // note while staying mounted.)
+  const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [playbackProgress, setPlaybackProgress] = useState(25);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState<number>(note?.durationSeconds || 0);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [editedTitle, setEditedTitle] = useState(note.title);
-  const [editedContent, setEditedContent] = useState(note.content);
+  const [editedTitle, setEditedTitle] = useState(note?.title ?? '');
+  const [editedContent, setEditedContent] = useState(note?.content ?? '');
   const [isAiSummarizing, setIsAiSummarizing] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Reset playback + edit state whenever the modal switches to a different
+  // note (it can stay mounted while `note` changes, so state from the
+  // previous note shouldn't leak into the next one).
+  useEffect(() => {
+    if (!note) return;
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setAudioDuration(note.durationSeconds || 0);
+    setPlaybackRate(1.0);
+    setEditedTitle(note.title);
+    setEditedContent(note.content);
+    setIsEditing(false);
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note?.id]);
+
+  if (!note) return null;
 
   const triggerToast = (msg: string) => {
     setToastMessage(msg);
@@ -134,6 +169,31 @@ export const NoteDetailModal: React.FC<NoteDetailModalProps> = ({
       console.error(e);
     } finally {
       setIsAiSummarizing(false);
+    }
+  };
+
+  const handlePlayPause = () => {
+    if (!audioRef.current) return;
+    if (isPlaying) {
+      audioRef.current.pause();
+    } else {
+      audioRef.current.play().catch((e) => console.warn('Audio playback failed:', e));
+    }
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTime = Number(e.target.value);
+    if (audioRef.current) {
+      audioRef.current.currentTime = newTime;
+    }
+    setCurrentTime(newTime);
+  };
+
+  const handleCyclePlaybackRate = () => {
+    const next = playbackRate === 1 ? 1.5 : playbackRate === 1.5 ? 2 : 1;
+    setPlaybackRate(next);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = next;
     }
   };
 
@@ -373,48 +433,79 @@ export const NoteDetailModal: React.FC<NoteDetailModalProps> = ({
               </div>
             )}
 
-            {/* Audio Player if Voice Note */}
+            {/* Audio Player if Voice Note — now wired to a real <audio> element */}
             {note.type === 'voice' && (
               <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 space-y-3 shadow-sm">
                 <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
                   <span className="flex items-center gap-1.5 font-bold text-indigo-600">
                     <Volume2 className="w-4 h-4 text-indigo-600" /> Voice Recording Playback
                   </span>
-                  <span>{note.durationSeconds ? `${Math.floor(note.durationSeconds / 60)}m ${note.durationSeconds % 60}s` : '1m 22s'}</span>
+                  <span>{formatTime(audioDuration)}</span>
                 </div>
 
-                <div className="flex items-center space-x-3">
-                  <button
-                    type="button"
-                    onClick={() => setIsPlaying(!isPlaying)}
-                    className="w-10 h-10 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center transition shadow-md shadow-indigo-200"
-                  >
-                    {isPlaying ? <Pause className="w-5 h-5 fill-current text-white" /> : <Play className="w-5 h-5 fill-current text-white ml-0.5" />}
-                  </button>
-
-                  <div className="flex-1 space-y-1">
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={playbackProgress}
-                      onChange={(e) => setPlaybackProgress(Number(e.target.value))}
-                      className="w-full accent-indigo-600 h-1.5 bg-slate-200 rounded-lg cursor-pointer"
+                {note.audioUrl ? (
+                  <>
+                    <audio
+                      ref={audioRef}
+                      src={note.audioUrl}
+                      preload="metadata"
+                      onLoadedMetadata={() => {
+                        if (audioRef.current && isFinite(audioRef.current.duration)) {
+                          setAudioDuration(audioRef.current.duration);
+                        }
+                      }}
+                      onTimeUpdate={() => {
+                        if (audioRef.current) setCurrentTime(audioRef.current.currentTime);
+                      }}
+                      onEnded={() => {
+                        setIsPlaying(false);
+                        setCurrentTime(0);
+                      }}
+                      onPlay={() => setIsPlaying(true)}
+                      onPause={() => setIsPlaying(false)}
+                      className="hidden"
                     />
-                    <div className="flex justify-between text-[10px] text-slate-400 font-mono font-medium">
-                      <span>00:{Math.floor((playbackProgress / 100) * (note.durationSeconds || 60)).toString().padStart(2, '0')}</span>
-                      <span>00:{note.durationSeconds || 60}</span>
-                    </div>
-                  </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setPlaybackRate(playbackRate === 1 ? 1.5 : playbackRate === 1.5 ? 2 : 1)}
-                    className="px-2 py-1 bg-white text-xs font-mono font-bold text-indigo-600 rounded-lg border border-slate-200 hover:bg-slate-100 transition shadow-sm"
-                  >
-                    {playbackRate}x
-                  </button>
-                </div>
+                    <div className="flex items-center space-x-3">
+                      <button
+                        type="button"
+                        onClick={handlePlayPause}
+                        className="w-10 h-10 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center transition shadow-md shadow-indigo-200"
+                      >
+                        {isPlaying ? <Pause className="w-5 h-5 fill-current text-white" /> : <Play className="w-5 h-5 fill-current text-white ml-0.5" />}
+                      </button>
+
+                      <div className="flex-1 space-y-1">
+                        <input
+                          type="range"
+                          min="0"
+                          max={audioDuration || 0}
+                          step="0.1"
+                          value={currentTime}
+                          onChange={handleSeek}
+                          className="w-full accent-indigo-600 h-1.5 bg-slate-200 rounded-lg cursor-pointer"
+                        />
+                        <div className="flex justify-between text-[10px] text-slate-400 font-mono font-medium">
+                          <span>{formatTime(currentTime)}</span>
+                          <span>{formatTime(audioDuration)}</span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleCyclePlaybackRate}
+                        className="px-2 py-1 bg-white text-xs font-mono font-bold text-indigo-600 rounded-lg border border-slate-200 hover:bg-slate-100 transition shadow-sm"
+                      >
+                        {playbackRate}x
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs text-slate-400 italic py-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>No audio was saved for this note.</span>
+                  </div>
+                )}
               </div>
             )}
 

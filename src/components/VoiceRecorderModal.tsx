@@ -11,6 +11,18 @@ interface VoiceRecorderModalProps {
   initialTitle?: string;
 }
 
+// Converts a recorded audio Blob into a base64 data URL — unlike
+// URL.createObjectURL(), this is a plain string that survives page
+// reloads and can be saved/synced alongside the rest of the note.
+const blobToDataUrl = (blob: Blob): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
+
 export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   isOpen,
   onClose,
@@ -32,6 +44,8 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Initialize Web Speech API & Mic Stream when opened
   useEffect(() => {
@@ -90,12 +104,37 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       }
     }
 
-    // 2. Try Web Audio API for real sound level visualizer
+    // 2. Get the mic stream — used for both the live waveform visualizer
+    // AND the actual audio recording (MediaRecorder) below.
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mediaStreamRef.current = stream;
 
+        // 2a. Actually record the audio so it can be played back later.
+        // (This was previously missing entirely — the mic stream was only
+        // ever used for the waveform, so no audio was ever saved.)
+        if (typeof window.MediaRecorder !== 'undefined') {
+          try {
+            const preferredType = ['audio/webm', 'audio/mp4', 'audio/ogg'].find((t) =>
+              MediaRecorder.isTypeSupported(t)
+            );
+            const recorder = new MediaRecorder(
+              stream,
+              preferredType ? { mimeType: preferredType } : undefined
+            );
+            audioChunksRef.current = [];
+            recorder.ondataavailable = (e: BlobEvent) => {
+              if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+            };
+            recorder.start();
+            mediaRecorderRef.current = recorder;
+          } catch (err) {
+            console.warn('MediaRecorder unavailable, note will save without audio:', err);
+          }
+        }
+
+        // 2b. Web Audio API for the real sound level visualizer
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
           const audioCtx = new AudioCtx();
@@ -134,6 +173,34 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
     }
   };
 
+  // Stops the MediaRecorder (if any) and resolves with the final audio
+  // Blob once it has fully flushed. Must be awaited BEFORE tearing down
+  // the mic stream/tracks, or the last chunk of audio can be lost.
+  const stopMediaRecorderAndGetBlob = (): Promise<Blob | null> => {
+    return new Promise((resolve) => {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder || recorder.state === 'inactive') {
+        resolve(
+          audioChunksRef.current.length
+            ? new Blob(audioChunksRef.current, { type: recorder?.mimeType || 'audio/webm' })
+            : null
+        );
+        return;
+      }
+      recorder.onstop = () => {
+        const blob = audioChunksRef.current.length
+          ? new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+          : null;
+        resolve(blob);
+      };
+      try {
+        recorder.stop();
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  };
+
   const stopRecordingProcess = () => {
     setIsRecording(false);
     if (timerRef.current) clearInterval(timerRef.current);
@@ -142,6 +209,12 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
+      } catch (e) {}
+    }
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
       } catch (e) {}
     }
 
@@ -169,12 +242,22 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
           recognitionRef.current.start();
         } catch (e) {}
       }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
+        try {
+          mediaRecorderRef.current.resume();
+        } catch (e) {}
+      }
     } else {
       setIsPaused(true);
       if (timerRef.current) clearInterval(timerRef.current);
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop();
+        } catch (e) {}
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        try {
+          mediaRecorderRef.current.pause();
         } catch (e) {}
       }
     }
@@ -187,9 +270,21 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   };
 
   const handleFinishAndSynthesize = async () => {
-    stopRecordingProcess();
     setIsProcessingAI(true);
     setErrorMsg(null);
+
+    // Capture the final recorded audio BEFORE tearing down the stream/tracks.
+    const audioBlob = await stopMediaRecorderAndGetBlob();
+    stopRecordingProcess();
+
+    let audioDataUrl: string | undefined;
+    if (audioBlob && audioBlob.size > 0) {
+      try {
+        audioDataUrl = await blobToDataUrl(audioBlob);
+      } catch (e) {
+        console.warn('Failed to encode recorded audio, saving note without playback audio:', e);
+      }
+    }
 
     const finalTranscript = transcript.trim() || initialTranscript || 'Voice recording without spoken text.';
 
@@ -221,6 +316,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
         sentiment: data.sentiment || 'Informational',
         createdAt: new Date().toISOString(),
         durationSeconds: seconds || 30,
+        audioUrl: audioDataUrl,
         isPinned: false,
       };
 
@@ -241,6 +337,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
         actionItems: [{ id: `act-${Date.now()}`, text: 'Review transcription', completed: false }],
         createdAt: new Date().toISOString(),
         durationSeconds: seconds || 15,
+        audioUrl: audioDataUrl,
       };
       onSaveNote(fallbackNote);
       setIsProcessingAI(false);
