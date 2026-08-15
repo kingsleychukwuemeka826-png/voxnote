@@ -1,5 +1,3 @@
-const Module = require('module');
-
 const expressPath = require.resolve('express');
 const originalExpress = require(expressPath);
 const originalListen = originalExpress.application.listen;
@@ -15,13 +13,16 @@ function registerLiveTokenRoute(app) {
         return res.status(503).json({ error: 'GEMINI_API_KEY is not configured.' });
       }
 
-      const { GoogleGenAI } = require('@google/genai');
-      const client = new GoogleGenAI({ apiKey });
       const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
       const newSessionExpireTime = new Date(Date.now() + 60 * 1000).toISOString();
 
-      const token = await client.authTokens.create({
-        config: {
+      const tokenResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           uses: 1,
           expireTime,
           newSessionExpireTime,
@@ -39,17 +40,23 @@ function registerLiveTokenRoute(app) {
               }
             }
           }
-        }
+        }),
       });
 
-      res.json({ token: token.name });
+      const payload = await tokenResponse.json();
+      if (!tokenResponse.ok || !payload.name) {
+        console.error('Gemini Live token provisioning failed:', payload);
+        return res.status(502).json({ error: payload.error?.message || 'Gemini Live token provisioning failed.' });
+      }
+
+      res.json({ token: payload.name });
     } catch (error) {
       console.error('Gemini Live token error:', error);
       res.status(500).json({ error: error?.message || 'Failed to create Gemini Live token.' });
     }
   });
 
-  // Ensure the API route is checked before any SPA/static fallback route.
+  // Put the route ahead of any SPA/static fallback route already registered.
   const stack = app._router?.stack;
   if (Array.isArray(stack)) {
     const layer = stack.pop();
