@@ -90,6 +90,26 @@ function createWavBlob(chunks: Int16Array[]): Blob | null {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
+async function getLiveToken(): Promise<string> {
+  const response = await fetch('/api/live-token', { method: 'POST' });
+  const rawBody = await response.text();
+
+  let data: any = null;
+  if (rawBody) {
+    try {
+      data = JSON.parse(rawBody);
+    } catch (_) {
+      throw new Error(`Live transcription server returned an invalid response (HTTP ${response.status}).`);
+    }
+  }
+
+  if (!response.ok || !data?.token) {
+    throw new Error(data?.error || `Live transcription server returned HTTP ${response.status}.`);
+  }
+
+  return data.token;
+}
+
 export async function startGeminiLiveTranscription(
   options: LiveTranscriptionOptions,
 ): Promise<LiveTranscriptionController> {
@@ -104,13 +124,8 @@ export async function startGeminiLiveTranscription(
   const pcmChunks: Int16Array[] = [];
 
   try {
-    const tokenResponse = await fetch('/api/live-token', { method: 'POST' });
-    const tokenData = await tokenResponse.json();
-    if (!tokenResponse.ok || !tokenData.token) {
-      throw new Error(tokenData.error || 'Unable to start Gemini Live transcription.');
-    }
-
-    const ai = new GoogleGenAI({ apiKey: tokenData.token });
+    const token = await getLiveToken();
+    const ai = new GoogleGenAI({ apiKey: token });
 
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -141,9 +156,7 @@ export async function startGeminiLiveTranscription(
       model: MODEL,
       config,
       callbacks: {
-        onopen: () => {
-          // Connection established. Audio is streamed by the processor below.
-        },
+        onopen: () => {},
         onmessage: (message: any) => {
           const text = message?.serverContent?.inputTranscription?.text;
           if (text) options.onText(text);
@@ -153,9 +166,7 @@ export async function startGeminiLiveTranscription(
           options.onError?.(event?.message || 'Gemini Live transcription encountered an error.');
         },
         onclose: (event: any) => {
-          if (!stopped) {
-            options.onError?.(event?.reason || 'Gemini Live connection closed.');
-          }
+          if (!stopped) options.onError?.(event?.reason || 'Gemini Live connection closed.');
         },
       },
     });
@@ -181,8 +192,6 @@ export async function startGeminiLiveTranscription(
       }
     };
 
-    // The zero-gain destination keeps ScriptProcessor callbacks alive without
-    // playing the microphone signal back through the phone speaker.
     const silentGain = audioContext.createGain();
     silentGain.gain.value = 0;
     source.connect(processor);
@@ -201,12 +210,8 @@ export async function startGeminiLiveTranscription(
     updateLevels();
 
     return {
-      pause: () => {
-        paused = true;
-      },
-      resume: () => {
-        paused = false;
-      },
+      pause: () => { paused = true; },
+      resume: () => { paused = false; },
       stop: async () => {
         if (stopped) return createWavBlob(pcmChunks);
         stopped = true;
