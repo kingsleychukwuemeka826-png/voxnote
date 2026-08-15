@@ -13,12 +13,12 @@ function registerLiveTokenRoute(app) {
       }
 
       const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-      const newSessionExpireTime = new Date(Date.now() + 60 * 1000).toISOString();
+      const newSessionExpireTime = new Date(Date.now() + 2 * 60 * 1000).toISOString();
 
-      // Use the documented REST auth_tokens endpoint. Keep the model name in
-      // the REST form (models/...) and parse the response as text first so a
-      // non-JSON upstream response never turns into the misleading
-      // "Unexpected end of JSON input" error in the browser.
+      // Keep the ephemeral-token constraints deliberately minimal. Gemini's
+      // token service is strict about which Live setup fields can be locked.
+      // The client adds inputAudioTranscription/sessionResumption after it
+      // authenticates with this token.
       const tokenResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
         method: 'POST',
         headers: {
@@ -33,16 +33,8 @@ function registerLiveTokenRoute(app) {
             model: 'models/gemini-3.1-flash-live-preview',
             config: {
               responseModalities: ['AUDIO'],
-              inputAudioTranscription: {},
-              contextWindowCompression: { slidingWindow: {} },
-              sessionResumption: {},
-              systemInstruction: {
-                parts: [{
-                  text: 'You are Voxnote transcription service. Listen to the user speech and do not respond verbally. Your only useful output is the input audio transcription. Preserve the speakers wording and punctuation as accurately as possible.'
-                }]
-              }
-            }
-          }
+            },
+          },
         }),
       });
 
@@ -50,7 +42,7 @@ function registerLiveTokenRoute(app) {
       let payload = null;
       try {
         payload = rawBody ? JSON.parse(rawBody) : null;
-      } catch (parseError) {
+      } catch (_) {
         console.error('Gemini Live token response was not valid JSON:', {
           status: tokenResponse.status,
           body: rawBody.slice(0, 500),
