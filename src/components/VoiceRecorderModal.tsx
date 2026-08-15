@@ -11,9 +11,6 @@ interface VoiceRecorderModalProps {
   initialTitle?: string;
 }
 
-// Converts a recorded audio Blob into a base64 data URL — unlike
-// URL.createObjectURL(), this is a plain string that survives page
-// reloads and can be saved/synced alongside the rest of the note.
 const blobToDataUrl = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -46,17 +43,23 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   const animationFrameRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  // Mirrors isRecording/isPaused for use inside event handlers set up once
-  // when recording starts — those closures would otherwise see stale
-  // values and never know recording has since paused/stopped.
+
+  // Speech recognition is intentionally kept independent from Gemini and
+  // MediaRecorder. Chrome can end a SpeechRecognition session by itself,
+  // so we recreate it after a short delay instead of calling start() on the
+  // same instance immediately from onend.
   const isRecordingActiveRef = useRef(false);
   const isPausedRef = useRef(false);
+  const recognitionStartingRef = useRef(false);
+  const recognitionRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechSessionRef = useRef(0);
+  const transcriptRef = useRef('');
 
-  // Initialize Web Speech API & Mic Stream when opened
   useEffect(() => {
     if (isOpen) {
       setSeconds(0);
       setTranscript(initialTranscript || '');
+      transcriptRef.current = initialTranscript || '';
       setErrorMsg(null);
       startRecordingProcess();
     } else {
@@ -68,77 +71,174 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
     };
   }, [isOpen]);
 
+  const stopSpeechRecognition = () => {
+    speechSessionRef.current += 1;
+
+    if (recognitionRestartTimerRef.current) {
+      clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
+    }
+
+    recognitionStartingRef.current = false;
+
+    const recognition = recognitionRef.current;
+    recognitionRef.current = null;
+
+    if (recognition) {
+      try {
+        recognition.onend = null;
+        recognition.onerror = null;
+        recognition.onresult = null;
+        recognition.stop();
+      } catch (e) {
+        // Recognition may already be stopped.
+      }
+    }
+  };
+
+  const startSpeechRecognition = () => {
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition || !isRecordingActiveRef.current || isPausedRef.current) {
+      return;
+    }
+
+    if (recognitionStartingRef.current || recognitionRef.current) {
+      return;
+    }
+
+    const sessionId = speechSessionRef.current;
+    const recognition = new SpeechRecognition();
+
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
+
+    let interimTranscript = '';
+
+    recognition.onstart = () => {
+      recognitionStartingRef.current = false;
+    };
+
+    recognition.onresult = (event: any) => {
+      let nextInterim = '';
+      let nextFinal = '';
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const text = event.results[i][0]?.transcript || '';
+        if (!text) continue;
+
+        if (event.results[i].isFinal) {
+          nextFinal += text.trim() + ' ';
+        } else {
+          nextInterim += text;
+        }
+      }
+
+      if (nextFinal.trim()) {
+        const existing = transcriptRef.current.trim();
+        transcriptRef.current = `${existing}${existing ? ' ' : ''}${nextFinal.trim()}`.trim();
+      }
+
+      interimTranscript = nextInterim;
+      const displayText = `${transcriptRef.current}${interimTranscript ? `${transcriptRef.current ? ' ' : ''}${interimTranscript}` : ''}`.trim();
+
+      if (displayText) {
+        setTranscript(displayText);
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      const error = event?.error || 'unknown';
+      console.warn('Speech recognition warning:', error);
+
+      // These are normal lifecycle errors and onend will restart the session.
+      if (error === 'no-speech' || error === 'aborted' || error === 'audio-capture') {
+        return;
+      }
+
+      // Permission errors need user action; repeatedly restarting only makes
+      // the browser less predictable and can create a restart loop.
+      if (error === 'not-allowed' || error === 'service-not-allowed') {
+        setErrorMsg('Microphone access was denied. Please allow microphone access and try again.');
+        isRecordingActiveRef.current = false;
+        setIsRecording(false);
+      }
+    };
+
+    recognition.onend = () => {
+      recognitionStartingRef.current = false;
+
+      if (recognitionRef.current === recognition) {
+        recognitionRef.current = null;
+      }
+
+      // Chrome may end recognition even while the user is still recording.
+      // Recreate the recognition object after a small delay. A fresh object is
+      // more reliable than calling start() immediately on the ended object.
+      if (
+        isRecordingActiveRef.current &&
+        !isPausedRef.current &&
+        sessionId === speechSessionRef.current
+      ) {
+        if (recognitionRestartTimerRef.current) {
+          clearTimeout(recognitionRestartTimerRef.current);
+        }
+
+        recognitionRestartTimerRef.current = setTimeout(() => {
+          recognitionRestartTimerRef.current = null;
+          startSpeechRecognition();
+        }, 250);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    recognitionStartingRef.current = true;
+
+    try {
+      recognition.start();
+    } catch (error) {
+      recognitionStartingRef.current = false;
+      recognitionRef.current = null;
+      console.warn('Speech recognition start failed:', error);
+
+      if (isRecordingActiveRef.current && !isPausedRef.current && sessionId === speechSessionRef.current) {
+        recognitionRestartTimerRef.current = setTimeout(() => {
+          recognitionRestartTimerRef.current = null;
+          startSpeechRecognition();
+        }, 500);
+      }
+    }
+  };
+
   const startRecordingProcess = async () => {
+    stopSpeechRecognition();
     setIsRecording(true);
     setIsPaused(false);
     isRecordingActiveRef.current = true;
     isPausedRef.current = false;
+    speechSessionRef.current += 1;
 
-    // Timer
+    if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
       setSeconds((prev) => prev + 1);
     }, 1000);
 
-    // 1. Try Browser Web Speech API for real-time live text
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (SpeechRecognition) {
-      try {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
-
-        recognition.onresult = (event: any) => {
-          let currentTranscript = '';
-          for (let i = 0; i < event.results.length; i++) {
-            currentTranscript += event.results[i][0].transcript;
-          }
-          if (currentTranscript.trim()) {
-            setTranscript(currentTranscript);
-          }
-        };
-
-        recognition.onerror = (e: any) => {
-          console.warn('Speech recognition warning:', e.error);
-          // 'no-speech' and 'aborted' are normal/recoverable — onend will
-          // fire right after and trigger a restart below. Anything more
-          // serious (e.g. 'not-allowed') isn't worth looping retries on.
-        };
-
-        recognition.onend = () => {
-          // Chrome's SpeechRecognition stops itself periodically even in
-          // continuous mode — after silence, roughly every ~60s of use, or
-          // under audio/CPU contention (more likely now that a MediaRecorder
-          // is also continuously encoding audio in the background). Restart
-          // it immediately as long as we're still actively recording.
-          if (isRecordingActiveRef.current && !isPausedRef.current) {
-            try {
-              recognition.start();
-            } catch (e) {
-              // Already started / transient — ignore, next onend will retry.
-            }
-          }
-        };
-
-        recognition.start();
-        recognitionRef.current = recognition;
-      } catch (err) {
-        console.warn('Speech recognition initialization error:', err);
-      }
-    }
-
-    // 2. Get the mic stream — used for both the live waveform visualizer
-    // AND the actual audio recording (MediaRecorder) below.
+    // Get the microphone first. The live transcript is browser-native and
+    // does not depend on Gemini being available.
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (!isRecordingActiveRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
         mediaStreamRef.current = stream;
 
-        // 2a. Actually record the audio so it can be played back later.
-        // (This was previously missing entirely — the mic stream was only
-        // ever used for the waveform, so no audio was ever saved.)
+        // Record the audio independently so playback is still available.
         if (typeof window.MediaRecorder !== 'undefined') {
           try {
             const preferredType = ['audio/webm', 'audio/mp4', 'audio/ogg'].find((t) =>
@@ -152,14 +252,14 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
             recorder.ondataavailable = (e: BlobEvent) => {
               if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
             };
-            recorder.start();
+            recorder.start(1000);
             mediaRecorderRef.current = recorder;
           } catch (err) {
             console.warn('MediaRecorder unavailable, note will save without audio:', err);
           }
         }
 
-        // 2b. Web Audio API for the real sound level visualizer
+        // Web Audio is only used for the visualizer.
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
           const audioCtx = new AudioCtx();
@@ -173,7 +273,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
           const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
           const updateVisualizer = () => {
-            if (analyserRef.current && !isPaused) {
+            if (analyserRef.current && !isPausedRef.current) {
               analyserRef.current.getByteFrequencyData(dataArray);
               const levels = Array.from(dataArray.slice(0, 10)).map(
                 (v) => Math.max(12, Math.min(95, (v / 255) * 100))
@@ -188,7 +288,8 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       }
     } catch (err) {
       console.warn('Microphone stream error, falling back to simulated audio waves:', err);
-      // Fallback simulated waves
+      setErrorMsg('Microphone access is unavailable. Live transcription may not work until microphone access is enabled.');
+
       const simInterval = setInterval(() => {
         setAudioLevels(
           Array.from({ length: 10 }, () => Math.floor(Math.random() * 70) + 15)
@@ -196,11 +297,14 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       }, 150);
       (window as any)._simInterval = simInterval;
     }
+
+    // Start recognition after microphone initialization. This keeps the
+    // browser speech service separate from the MediaRecorder lifecycle.
+    if (isRecordingActiveRef.current && !isPausedRef.current) {
+      startSpeechRecognition();
+    }
   };
 
-  // Stops the MediaRecorder (if any) and resolves with the final audio
-  // Blob once it has fully flushed. Must be awaited BEFORE tearing down
-  // the mic stream/tracks, or the last chunk of audio can be lost.
   const stopMediaRecorderAndGetBlob = (): Promise<Blob | null> => {
     return new Promise((resolve) => {
       const recorder = mediaRecorderRef.current;
@@ -212,12 +316,14 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
         );
         return;
       }
+
       recorder.onstop = () => {
         const blob = audioChunksRef.current.length
           ? new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
           : null;
         resolve(blob);
       };
+
       try {
         recorder.stop();
       } catch (e) {
@@ -227,15 +333,20 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
   };
 
   const stopRecordingProcess = () => {
-    setIsRecording(false);
     isRecordingActiveRef.current = false;
-    if (timerRef.current) clearInterval(timerRef.current);
-    if ((window as any)._simInterval) clearInterval((window as any)._simInterval);
+    isPausedRef.current = false;
+    setIsRecording(false);
 
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {}
+    stopSpeechRecognition();
+
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    if ((window as any)._simInterval) {
+      clearInterval((window as any)._simInterval);
+      (window as any)._simInterval = null;
     }
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -246,14 +357,17 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
 
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
     }
 
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
     }
 
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close();
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
     }
   };
 
@@ -261,14 +375,18 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
     if (isPaused) {
       setIsPaused(false);
       isPausedRef.current = false;
+      isRecordingActiveRef.current = true;
+
+      if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
         setSeconds((prev) => prev + 1);
       }, 1000);
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.start();
-        } catch (e) {}
-      }
+
+      // Start a fresh speech session rather than trying to reuse an ended
+      // recognition object.
+      speechSessionRef.current += 1;
+      startSpeechRecognition();
+
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
         try {
           mediaRecorderRef.current.resume();
@@ -278,11 +396,8 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       setIsPaused(true);
       isPausedRef.current = true;
       if (timerRef.current) clearInterval(timerRef.current);
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {}
-      }
+      stopSpeechRecognition();
+
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         try {
           mediaRecorderRef.current.pause();
@@ -299,6 +414,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
 
   const handleFinishAndSynthesize = async () => {
     isRecordingActiveRef.current = false;
+    isPausedRef.current = false;
     setIsProcessingAI(true);
     setErrorMsg(null);
 
@@ -315,7 +431,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       }
     }
 
-    const finalTranscript = transcript.trim() || initialTranscript || 'Voice recording without spoken text.';
+    const finalTranscript = transcriptRef.current.trim() || transcript.trim() || initialTranscript || 'Voice recording without spoken text.';
 
     try {
       const res = await fetch('/api/generate-note', {
@@ -354,11 +470,10 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       onClose();
     } catch (err: any) {
       console.error('Failed to summarize note with AI:', err);
-      // Fallback local note creation
       const fallbackNote: Note = {
         id: `note-${Date.now()}`,
-        title: initialTitle || (transcript ? transcript.slice(0, 30) : 'Voice Note'),
-        summary: transcript || 'Recorded audio snippet.',
+        title: initialTitle || (finalTranscript ? finalTranscript.slice(0, 30) : 'Voice Note'),
+        summary: finalTranscript || 'Recorded audio snippet.',
         content: `## Transcribed Audio\n\n${finalTranscript}`,
         type: 'voice',
         tags: ['Voice Note', 'Meeting'],
@@ -385,7 +500,6 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
           className="w-full max-w-lg bg-white border border-slate-100 rounded-3xl p-6 shadow-2xl overflow-hidden relative text-slate-900"
         >
-          {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center space-x-2">
               <span className="relative flex h-3 w-3">
@@ -408,19 +522,18 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
             </button>
           </div>
 
-          {/* Central Animated Mic Pulse */}
           <div className="flex flex-col items-center justify-center py-6">
             <div className="relative flex items-center justify-center">
               {!isPaused && !isProcessingAI && (
                 <>
                   <motion.div
                     animate={{ scale: [1, 1.35, 1], opacity: [0.3, 0.05, 0.3] }}
-                    transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+                    transition={{ repeat: Infinity, duration: 2, ease: 'easeInOut' }}
                     className="absolute w-36 h-36 bg-indigo-100 rounded-full pointer-events-none"
                   />
                   <motion.div
                     animate={{ scale: [1, 1.2, 1], opacity: [0.4, 0.1, 0.4] }}
-                    transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
+                    transition={{ repeat: Infinity, duration: 1.5, ease: 'easeInOut' }}
                     className="absolute w-28 h-28 bg-indigo-50 rounded-full pointer-events-none"
                   />
                 </>
@@ -443,12 +556,10 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
               </div>
             </div>
 
-            {/* Timer */}
             <div className="mt-5 text-3xl font-mono font-bold text-slate-900 tracking-wider">
               {formatTime(seconds)}
             </div>
 
-            {/* Audio Waveform Bars */}
             <div className="flex items-center justify-center gap-1.5 h-12 mt-4 px-4 w-full max-w-xs">
               {audioLevels.map((lvl, idx) => (
                 <motion.div
@@ -461,7 +572,6 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
             </div>
           </div>
 
-          {/* Live Transcript Preview */}
           <div className="mt-2 mb-6">
             <div className="flex items-center justify-between text-xs text-slate-500 mb-2 font-medium">
               <span className="flex items-center gap-1 font-bold">
@@ -469,7 +579,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
               </span>
               <span className="text-[11px] text-slate-400">Auto-detecting...</span>
             </div>
-            
+
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 min-h-[90px] max-h-[140px] overflow-y-auto text-slate-800 text-xs leading-relaxed scrollbar-thin">
               {transcript ? (
                 <p className="text-slate-800 font-normal">{transcript}</p>
@@ -479,9 +589,15 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
                 </p>
               )}
             </div>
+
+            {errorMsg && (
+              <div className="mt-2 flex items-start gap-2 rounded-xl bg-amber-50 border border-amber-200 p-3 text-[11px] text-amber-800">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
           </div>
 
-          {/* Controls */}
           <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-100">
             <button
               type="button"
