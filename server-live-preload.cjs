@@ -1,6 +1,5 @@
 const expressPath = require.resolve('express');
 const originalExpress = require(expressPath);
-const originalListen = originalExpress.application.listen;
 
 function registerLiveTokenRoute(app) {
   if (app.__voxnoteLiveTokenRouteRegistered) return;
@@ -13,22 +12,25 @@ function registerLiveTokenRoute(app) {
         return res.status(503).json({ error: 'GEMINI_API_KEY is not configured on Render.' });
       }
 
-      // Use the official @google/genai token provisioning API instead of
-      // manually parsing the REST response. This also keeps the Live API
-      // authentication format aligned with the current Gemini SDK.
-      const { GoogleGenAI } = require('@google/genai');
-      const ai = new GoogleGenAI({ apiKey });
-
       const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
       const newSessionExpireTime = new Date(Date.now() + 60 * 1000).toISOString();
 
-      const token = await ai.authTokens.create({
-        config: {
+      // Use the documented REST auth_tokens endpoint. Keep the model name in
+      // the REST form (models/...) and parse the response as text first so a
+      // non-JSON upstream response never turns into the misleading
+      // "Unexpected end of JSON input" error in the browser.
+      const tokenResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           uses: 1,
           expireTime,
           newSessionExpireTime,
           liveConnectConstraints: {
-            model: 'gemini-3.1-flash-live-preview',
+            model: 'models/gemini-3.1-flash-live-preview',
             config: {
               responseModalities: ['AUDIO'],
               inputAudioTranscription: {},
@@ -41,15 +43,34 @@ function registerLiveTokenRoute(app) {
               }
             }
           }
-        }
+        }),
       });
 
-      if (!token?.name) {
-        console.error('Gemini Live token provisioning returned no token name:', token);
-        return res.status(502).json({ error: 'Gemini Live did not return a usable authentication token.' });
+      const rawBody = await tokenResponse.text();
+      let payload = null;
+      try {
+        payload = rawBody ? JSON.parse(rawBody) : null;
+      } catch (parseError) {
+        console.error('Gemini Live token response was not valid JSON:', {
+          status: tokenResponse.status,
+          body: rawBody.slice(0, 500),
+        });
+        return res.status(502).json({
+          error: `Gemini token service returned an invalid response (HTTP ${tokenResponse.status}).`,
+        });
       }
 
-      return res.json({ token: token.name });
+      if (!tokenResponse.ok || !payload?.name) {
+        console.error('Gemini Live token provisioning failed:', {
+          status: tokenResponse.status,
+          payload,
+        });
+        return res.status(502).json({
+          error: payload?.error?.message || `Gemini Live token provisioning failed (HTTP ${tokenResponse.status}).`,
+        });
+      }
+
+      return res.json({ token: payload.name });
     } catch (error) {
       console.error('Gemini Live token error:', error);
       return res.status(500).json({
@@ -61,8 +82,8 @@ function registerLiveTokenRoute(app) {
   // Put the route ahead of any SPA/static fallback route already registered.
   const stack = app._router?.stack;
   if (Array.isArray(stack)) {
-    const layer = stack.pop();
-    if (layer) stack.unshift(layer);
+    const routeLayer = stack.pop();
+    if (routeLayer) stack.unshift(routeLayer);
   }
 }
 
