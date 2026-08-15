@@ -10,19 +10,20 @@ function registerLiveTokenRoute(app) {
     try {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
-        return res.status(503).json({ error: 'GEMINI_API_KEY is not configured.' });
+        return res.status(503).json({ error: 'GEMINI_API_KEY is not configured on Render.' });
       }
+
+      // Use the official @google/genai token provisioning API instead of
+      // manually parsing the REST response. This also keeps the Live API
+      // authentication format aligned with the current Gemini SDK.
+      const { GoogleGenAI } = require('@google/genai');
+      const ai = new GoogleGenAI({ apiKey });
 
       const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
       const newSessionExpireTime = new Date(Date.now() + 60 * 1000).toISOString();
 
-      const tokenResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
-        method: 'POST',
-        headers: {
-          'x-goog-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const token = await ai.authTokens.create({
+        config: {
           uses: 1,
           expireTime,
           newSessionExpireTime,
@@ -35,24 +36,25 @@ function registerLiveTokenRoute(app) {
               sessionResumption: {},
               systemInstruction: {
                 parts: [{
-                  text: 'You are Voxnote transcription service. Listen to the user\'s speech and do not respond verbally. Your only useful output is the input audio transcription. Preserve the speaker\'s wording and punctuation as accurately as possible.'
+                  text: 'You are Voxnote transcription service. Listen to the user speech and do not respond verbally. Your only useful output is the input audio transcription. Preserve the speakers wording and punctuation as accurately as possible.'
                 }]
               }
             }
           }
-        }),
+        }
       });
 
-      const payload = await tokenResponse.json();
-      if (!tokenResponse.ok || !payload.name) {
-        console.error('Gemini Live token provisioning failed:', payload);
-        return res.status(502).json({ error: payload.error?.message || 'Gemini Live token provisioning failed.' });
+      if (!token?.name) {
+        console.error('Gemini Live token provisioning returned no token name:', token);
+        return res.status(502).json({ error: 'Gemini Live did not return a usable authentication token.' });
       }
 
-      res.json({ token: payload.name });
+      return res.json({ token: token.name });
     } catch (error) {
       console.error('Gemini Live token error:', error);
-      res.status(500).json({ error: error?.message || 'Failed to create Gemini Live token.' });
+      return res.status(500).json({
+        error: error?.message || 'Failed to create Gemini Live token.'
+      });
     }
   });
 
@@ -69,7 +71,7 @@ function wrappedExpress(...args) {
   const originalAppListen = app.listen;
   app.listen = function (...listenArgs) {
     registerLiveTokenRoute(app);
-    return originalAppListen.apply(app, listenArgs);
+    return originalAppListen.apply(this, listenArgs);
   };
   return app;
 }
