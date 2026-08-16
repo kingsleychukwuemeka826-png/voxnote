@@ -1,6 +1,19 @@
 const expressPath = require.resolve('express');
 const originalExpress = require(expressPath);
 
+function sendJson(res, statusCode, body) {
+  // Use the native Node response API instead of res.status()/res.json().
+  // The live-token route can be registered before Express has attached its
+  // response helpers, which previously caused `res.status is not a function`.
+  res.statusCode = statusCode;
+  if (typeof res.setHeader === 'function') {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  }
+  const serialized = JSON.stringify(body);
+  if (typeof res.end === 'function') return res.end(serialized);
+  return serialized;
+}
+
 function registerLiveTokenRoute(app) {
   if (app.__voxnoteLiveTokenRouteRegistered) return;
   app.__voxnoteLiveTokenRouteRegistered = true;
@@ -9,12 +22,9 @@ function registerLiveTokenRoute(app) {
     try {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
-        return res.status(503).json({ error: 'GEMINI_API_KEY is not configured on Render.' });
+        return sendJson(res, 503, { error: 'GEMINI_API_KEY is not configured on Render.' });
       }
 
-      // Keep this request aligned with Google's current REST example for
-      // ephemeral Live API tokens. In particular, don't send extra fields
-      // that aren't required for token provisioning.
       const tokenResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
         method: 'POST',
         headers: {
@@ -43,7 +53,7 @@ function registerLiveTokenRoute(app) {
           status: tokenResponse.status,
           body: rawBody.slice(0, 1000),
         });
-        return res.status(502).json({
+        return sendJson(res, 502, {
           error: `Gemini token service returned a non-JSON response (HTTP ${tokenResponse.status}).`,
         });
       }
@@ -54,23 +64,22 @@ function registerLiveTokenRoute(app) {
           status: tokenResponse.status,
           payload,
         });
-        return res.status(502).json({
+        return sendJson(res, 502, {
           error: providerMessage
             ? `Gemini token provisioning failed: ${providerMessage}`
             : `Gemini Live token provisioning failed (HTTP ${tokenResponse.status}).`,
         });
       }
 
-      return res.json({ token: payload.name });
+      return sendJson(res, 200, { token: payload.name });
     } catch (error) {
       console.error('Gemini Live token error:', error);
-      return res.status(500).json({
+      return sendJson(res, 500, {
         error: error?.message || 'Failed to create Gemini Live token.'
       });
     }
   });
 
-  // Put the route ahead of any SPA/static fallback route already registered.
   const stack = app._router?.stack;
   if (Array.isArray(stack)) {
     const routeLayer = stack.pop();
