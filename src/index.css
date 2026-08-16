@@ -36,8 +36,56 @@
     font: inherit;
   }
 
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 3px solid rgba(99, 102, 241, 0.22);
+    outline-offset: 2px;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: #a1a8b7;
+  }
+
   ::selection {
     background: rgba(99, 102, 241, 0.18);
+  }
+}
+
+/* Premium UI motion without affecting recorder behavior */
+@media (prefers-reduced-motion: no-preference) {
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+    transition-duration: 180ms;
+    transition-timing-function: ease-out;
+  }
+}
+
+/* Keep mobile content clear of the floating navigation */
+@media (max-width: 767px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  input,
+  textarea,
+  select {
+    font-size: 16px;
   }
 }
 
