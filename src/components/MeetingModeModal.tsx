@@ -11,6 +11,70 @@ interface MeetingModeModalProps {
 type CaptureState = 'idle' | 'requesting' | 'recording' | 'paused' | 'processing' | 'done' | 'error';
 
 const MAX_MINUTES = 20;
+const SPEECH_SAMPLE_RATE = 12000;
+
+function writeAscii(view: DataView, offset: number, value: string) {
+  for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i));
+}
+
+function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
+  const bytesPerSample = 2;
+  const dataSize = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    offset += 2;
+  }
+
+  return buffer;
+}
+
+async function convertBrowserRecordingToWav(blob: Blob): Promise<string> {
+  const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextClass) throw new Error('Web Audio is not supported by this browser.');
+
+  const context = new AudioContextClass();
+  try {
+    const inputBuffer = await context.decodeAudioData(await blob.arrayBuffer());
+    const frameCount = Math.max(1, Math.ceil(inputBuffer.duration * SPEECH_SAMPLE_RATE));
+    const offlineContext = new OfflineAudioContext(1, frameCount, SPEECH_SAMPLE_RATE);
+    const source = offlineContext.createBufferSource();
+    source.buffer = inputBuffer;
+    source.connect(offlineContext.destination);
+    source.start(0);
+
+    const rendered = await offlineContext.startRendering();
+    const wav = encodeWav(rendered.getChannelData(0), SPEECH_SAMPLE_RATE);
+    const wavBlob = new Blob([wav], { type: 'audio/wav' });
+
+    const reader = new FileReader();
+    return await new Promise<string>((resolve, reject) => {
+      reader.onloadend = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('Could not prepare the meeting audio.'));
+      reader.readAsDataURL(wavBlob);
+    });
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
 
 export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = true, onClose, onSaveNote }) => {
   const [state, setState] = useState<CaptureState>('idle');
@@ -60,9 +124,7 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
   };
 
   const closeModal = () => {
-    if (state === 'recording' || state === 'paused') {
-      mediaRecorderRef.current?.stop();
-    }
+    if (state === 'recording' || state === 'paused') mediaRecorderRef.current?.stop();
     cleanupStreams();
     mediaRecorderRef.current = null;
     onClose();
@@ -86,9 +148,6 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
       const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       displayStreamRef.current = displayStream;
 
-      // A meeting capture must contain shared meeting audio. Chrome can return
-      // a display stream without audio when the user did not enable "Share audio"
-      // or selected a source that does not provide system audio.
       if (!displayStream.getAudioTracks().length) {
         displayStream.getTracks().forEach((track) => track.stop());
         displayStreamRef.current = null;
@@ -120,9 +179,7 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
         setState('error');
         cleanupStreams();
       };
-      displayStream.getVideoTracks()[0]?.addEventListener('ended', () => {
-        stopRecording();
-      });
+      displayStream.getVideoTracks()[0]?.addEventListener('ended', () => stopRecording());
 
       recorder.start(1000);
       startedAtRef.current = Date.now();
@@ -172,12 +229,11 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
     }
 
     try {
-      const reader = new FileReader();
-      const base64 = await new Promise<string>((resolve, reject) => {
-        reader.onloadend = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(reader.error || new Error('Could not read recording.'));
-        reader.readAsDataURL(blob);
-      });
+      setSourceLabel('Preparing speech audio…');
+      // Chrome records the mixed stream as WebM/Opus, while Gemini's documented
+      // audio inputs are WAV/MP3/AAC/OGG/FLAC/AIFF. Convert in-browser to a
+      // compact 12 kHz mono PCM WAV before sending it to the AI endpoint.
+      const base64 = await convertBrowserRecordingToWav(blob);
 
       const res = await fetch('/api/generate-note', {
         method: 'POST',
@@ -185,7 +241,11 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
         body: JSON.stringify({ audioBase64: base64, titleHint: title.trim() || 'Meeting Notes', categoryHint: 'Meeting' }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to process meeting audio.');
+
+      if (!res.ok) {
+        const detail = data.details ? `: ${data.details}` : '';
+        throw new Error(`${data.error || 'Failed to process meeting audio'}${detail}`);
+      }
 
       const note: Note = {
         id: `meeting-${Date.now()}`,
@@ -240,7 +300,7 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
             </div>
           )}
 
-          {state === 'processing' && <div className="py-10 text-center"><div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center animate-pulse"><Mic className="w-6 h-6" /></div><h3 className="font-extrabold text-slate-900 mt-4">Creating your meeting note…</h3><p className="text-xs text-slate-400 mt-1">Voxnote is analyzing the captured audio.</p></div>}
+          {state === 'processing' && <div className="py-10 text-center"><div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center animate-pulse"><Mic className="w-6 h-6" /></div><h3 className="font-extrabold text-slate-900 mt-4">Creating your meeting note…</h3><p className="text-xs text-slate-400 mt-1">Voxnote is preparing and analyzing the captured audio.</p></div>}
           {state === 'done' && <div className="py-8 text-center"><div className="w-14 h-14 mx-auto rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center"><CheckCircle2 className="w-7 h-7" /></div><h3 className="font-extrabold text-slate-900 mt-4">Meeting note saved</h3><p className="text-xs text-slate-400 mt-1">Your summary, takeaways and action items are now in Notes.</p><button type="button" onClick={onClose} className="mt-5 px-5 py-3 rounded-2xl bg-indigo-600 text-white font-bold text-sm">Done</button></div>}
           {state === 'error' && <div className="space-y-4"><div className="rounded-2xl bg-rose-50 border border-rose-100 p-4 text-sm text-rose-800 leading-relaxed">{error}</div><div className="flex gap-3"><button type="button" onClick={() => { setError(''); setState('idle'); }} className="flex-1 py-3 rounded-2xl bg-slate-100 text-slate-800 font-bold text-sm hover:bg-slate-200">Try again</button><button type="button" onClick={closeModal} className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-bold text-sm hover:bg-slate-800">Close</button></div></div>}
         </div>
