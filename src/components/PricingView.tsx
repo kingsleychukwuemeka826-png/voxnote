@@ -71,8 +71,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
   const monthlyCap = isPro ? PRO_MONTHLY_MINUTES : FREE_MONTHLY_MINUTES;
   const usagePercent = Math.min(100, Math.round((minutesUsed / monthlyCap) * 100));
 
-  // Paystack returns to ?billing=success. The URL itself is not trusted as
-  // proof of payment; Firebase billing remains the source of truth.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('billing') !== 'success') return;
@@ -81,8 +79,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
     setBillingError('');
   }, []);
 
-  // The parent App already listens to users/{uid}/meta/billing in real time.
-  // Once the signed webhook updates that document, isPro becomes true here.
   useEffect(() => {
     if (!paymentReturnPending) return;
 
@@ -103,23 +99,29 @@ export const PricingView: React.FC<PricingViewProps> = ({
   const handleUpgrade = async () => {
     setBillingError('');
 
-    if (billingIsLive) {
-      if (!user) {
-        setBillingError('Please sign in first — go back and log in, then try again.');
-        return;
-      }
+    if (!user) {
+      setBillingError('Please sign in first — go back and log in, then try again.');
+      return;
+    }
 
-      setIsUpgrading(true);
+    setIsUpgrading(true);
+
+    // In a live Firebase deployment, a failed Paystack request must NOT
+    // silently fall through to the local/demo Pro activation path.
+    if (billingIsLive) {
       const result = await createCheckoutSession(user.id, user.email, billingCycle);
+
       if (result.configured && result.url) {
         window.location.href = result.url;
         return;
       }
+
       setIsUpgrading(false);
+      setBillingError(result.error || 'Unable to start the Paystack checkout. Please try again.');
+      return;
     }
 
-    // Local/test fallback. No unavailable calendar or meeting-bot feature is enabled.
-    setIsUpgrading(true);
+    // Local development fallback only.
     setTimeout(() => {
       setIsUpgrading(false);
       setUpgradeSuccess(true);
@@ -129,19 +131,32 @@ export const PricingView: React.FC<PricingViewProps> = ({
   };
 
   const handleManageBilling = async () => {
-    if (!user) return;
+    if (!user) {
+      setBillingError('Please sign in to manage your subscription.');
+      return;
+    }
+
     setBillingError('');
     setIsUpgrading(true);
+
+    if (!billingIsLive) {
+      setIsUpgrading(false);
+      setBillingError('Billing management is available after connecting Paystack.');
+      return;
+    }
+
     const result = await createPortalSession(user.id);
     setIsUpgrading(false);
 
     if (result.configured && result.url) {
       window.location.href = result.url;
-    } else if (!billingIsLive) {
-      onUpdateSettings({ ...settings, isProPlan: false });
-    } else {
-      setBillingError(result.error || 'Could not open billing portal.');
+      return;
     }
+
+    setBillingError(
+      result.error ||
+        'No Paystack subscription could be found for this account. Complete a Pro subscription first, then try Manage Billing again.'
+    );
   };
 
   const proFeatures = [
