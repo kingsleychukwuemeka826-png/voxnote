@@ -1,1 +1,0 @@
-Meeting Mode migration is being wired as a Pro-only desktop feature while keeping the production billing implementation untouched.
