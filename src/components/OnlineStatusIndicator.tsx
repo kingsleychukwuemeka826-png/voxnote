@@ -1,4 +1,4 @@
-import React, { useState, useEffect, ChangeEvent } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Wifi, WifiOff, RefreshCw, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -42,7 +42,6 @@ export const OnlineStatusIndicator: React.FC<OnlineStatusIndicatorProps> = ({
 
   return (
     <div className={`relative inline-block ${className}`}>
-      {/* Trigger Pill */}
       <button
         type="button"
         onClick={() => setShowPopover(!showPopover)}
@@ -79,13 +78,11 @@ export const OnlineStatusIndicator: React.FC<OnlineStatusIndicatorProps> = ({
         )}
       </button>
 
-      {/* Popover / Status Modal Dropdown */}
       <AnimatePresence>
         {showPopover && (
           <>
-            {/* Backdrop click dismiss */}
             <div
-              className="fixed inset-0 z-40 bg-slate-900/10 sm:bg-transparent backdrop-blur-[1px] sm:backdrop-blur-none"
+              className="fixed inset-0 z-40 bg-slate-900/10 backdrop-blur-[1px] sm:bg-transparent sm:backdrop-blur-none"
               onClick={() => setShowPopover(false)}
             />
 
@@ -93,7 +90,7 @@ export const OnlineStatusIndicator: React.FC<OnlineStatusIndicatorProps> = ({
               initial={{ opacity: 0, scale: 0.95, y: -6 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -6 }}
-             className="absolute top-full right-0 mt-2 w-72 max-w-[calc(100vw-2rem)] z-50 bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xl text-slate-900 text-xs space-y-3"
+              className="fixed left-3 right-3 top-[4.75rem] z-50 w-auto max-w-none bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xl text-slate-900 text-xs space-y-3 sm:absolute sm:top-full sm:left-auto sm:right-0 sm:mt-2 sm:w-72 sm:max-w-[calc(100vw-2rem)]"
             >
               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                 <span className="font-extrabold text-slate-900 flex items-center gap-1.5">
@@ -110,29 +107,22 @@ export const OnlineStatusIndicator: React.FC<OnlineStatusIndicatorProps> = ({
                 </span>
               </div>
 
-              {/* Network Status Info */}
               <div className="space-y-2">
-                <div className="flex items-center justify-between text-slate-600">
-                  <span>Network Connectivity:</span>
-                  <span className="font-bold text-slate-800">
-                    {isOnline ? 'Connected' : 'Disconnected'}
-                  </span>
+                <div className="flex items-center justify-between gap-4 text-slate-600">
+                  <span className="min-w-0">Network Connectivity:</span>
+                  <span className="font-bold text-slate-800 shrink-0">{isOnline ? 'Connected' : 'Disconnected'}</span>
                 </div>
 
-                <div className="flex items-center justify-between text-slate-600">
-                  <span>Local Data Engine:</span>
-                  <span className="font-bold text-emerald-600 flex items-center gap-1">
+                <div className="flex items-center justify-between gap-4 text-slate-600">
+                  <span className="min-w-0">Local Data Engine:</span>
+                  <span className="font-bold text-emerald-600 flex items-center gap-1 shrink-0">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Persistent Safe
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-slate-600">
-                  <span>AI Requests & Sync:</span>
-                  <span
-                    className={`font-bold ${
-                      effectiveOnline ? 'text-indigo-600' : 'text-amber-600'
-                    }`}
-                  >
+                <div className="flex items-center justify-between gap-4 text-slate-600">
+                  <span className="min-w-0">AI Requests & Sync:</span>
+                  <span className={`font-bold shrink-0 ${effectiveOnline ? 'text-indigo-600' : 'text-amber-600'}`}>
                     {effectiveOnline ? 'Active (Ready)' : 'Queued until online'}
                   </span>
                 </div>
@@ -147,8 +137,7 @@ export const OnlineStatusIndicator: React.FC<OnlineStatusIndicatorProps> = ({
                 </div>
               )}
 
-              {/* Actions & Simulation Toggle */}
-              <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-3">
                 <button
                   type="button"
                   onClick={handleManualSync}
@@ -159,7 +148,7 @@ export const OnlineStatusIndicator: React.FC<OnlineStatusIndicatorProps> = ({
                   <span>{isSyncing ? 'Syncing...' : 'Force Sync Now'}</span>
                 </button>
 
-                <label className="flex items-center gap-1.5 cursor-pointer text-[10px] font-bold text-slate-500 hover:text-slate-800">
+                <label className="flex items-center gap-1.5 cursor-pointer text-[10px] font-bold text-slate-500 hover:text-slate-800 shrink-0">
                   <input
                     type="checkbox"
                     checked={simulatedOffline}

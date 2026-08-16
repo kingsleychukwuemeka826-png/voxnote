@@ -3,7 +3,6 @@ import { OnlineStatusIndicator } from './OnlineStatusIndicator';
 import {
   Mic,
   Camera,
-  Sparkles,
   Pin,
   Clock,
   Volume2,
@@ -14,6 +13,10 @@ import {
   Zap,
   Play,
   Brain,
+  BrainCircuit,
+  Lightbulb,
+  ClipboardPaste,
+  Crown,
   ListTodo,
   TrendingUp,
   Plus
@@ -125,7 +128,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
           <div className="min-w-0">
             <div className="flex items-center gap-2 mb-1.5">
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-100/80 flex items-center gap-1.5 whitespace-nowrap shrink-0">
-                <Sparkles className="w-3 h-3 text-indigo-600 shrink-0" />
+                <BrainCircuit className="w-3 h-3 text-indigo-600 shrink-0" />
                 <span>AI-Powered</span>
               </span>
               <OnlineStatusIndicator />
@@ -145,7 +148,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
                   : 'bg-gradient-to-r from-amber-400 to-amber-300 text-slate-950 hover:brightness-105 border border-amber-300'
               }`}
             >
-              <Sparkles className="w-3.5 h-3.5 text-slate-950 shrink-0" />
+              <Crown className="w-3.5 h-3.5 text-slate-950 shrink-0" />
               <span className="hidden sm:inline">{isPro ? 'Pro Active' : 'Upgrade Pro'}</span>
               <span className="sm:hidden">{isPro ? 'Pro' : 'Upgrade'}</span>
             </button>
@@ -270,7 +273,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
               onClick={onOpenPasteSummarize}
               className="flex items-center justify-center space-x-1.5 sm:space-x-2 px-3 sm:px-4 py-3 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-500 font-bold text-xs transition shadow-md shadow-indigo-200 active:scale-[0.98]"
             >
-              <Sparkles className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-300 shrink-0" />
+              <ClipboardPaste className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-300 shrink-0" />
               <span className="truncate">Paste & Summarize</span>
             </button>
 
@@ -339,7 +342,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
 
           {/* Bottom Callout */}
           <div className="p-3.5 rounded-2xl bg-gradient-to-r from-indigo-50 to-indigo-100/50 border border-indigo-100 text-xs text-indigo-900 flex items-center gap-3">
-            <Sparkles className="w-5 h-5 text-indigo-600 shrink-0" />
+            <Lightbulb className="w-5 h-5 text-indigo-600 shrink-0" />
             <p className="text-[11px] leading-relaxed font-medium">
               <strong className="font-bold">Pro Tip:</strong> You can also speak in Spanish, French, or German and AI will translate and format automatically.
             </p>
@@ -454,4 +457,3 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
     </div>
   );
 };
-
