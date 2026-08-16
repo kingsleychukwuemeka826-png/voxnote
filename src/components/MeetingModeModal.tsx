@@ -86,6 +86,15 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
       const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       displayStreamRef.current = displayStream;
 
+      // A meeting capture must contain shared meeting audio. Chrome can return
+      // a display stream without audio when the user did not enable "Share audio"
+      // or selected a source that does not provide system audio.
+      if (!displayStream.getAudioTracks().length) {
+        displayStream.getTracks().forEach((track) => track.stop());
+        displayStreamRef.current = null;
+        throw new Error('No meeting audio was shared. In Chrome, choose your Google Meet/Zoom/Teams tab and turn on "Share audio" before clicking Share.');
+      }
+
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = micStream;
 
@@ -95,13 +104,9 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
       audioContextRef.current = audioContext;
       const destination = audioContext.createMediaStreamDestination();
 
-      if (displayStream.getAudioTracks().length) {
-        audioContext.createMediaStreamSource(displayStream).connect(destination);
-        setSourceLabel('Meeting audio + microphone');
-      } else {
-        setSourceLabel('Microphone only — no shared tab audio was provided');
-      }
+      audioContext.createMediaStreamSource(displayStream).connect(destination);
       audioContext.createMediaStreamSource(micStream).connect(destination);
+      setSourceLabel('Meeting tab audio + microphone');
 
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
       const recorder = new MediaRecorder(destination.stream, { mimeType });
@@ -219,7 +224,7 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen = tru
         <div className="p-5 sm:p-7 space-y-5">
           {state === 'idle' && (
             <>
-              <div className="rounded-2xl bg-indigo-50 border border-indigo-100 p-4 flex gap-3"><ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" /><div><p className="text-sm font-bold text-indigo-950">Capture a meeting from your desktop</p><p className="text-xs text-indigo-700/80 mt-1 leading-relaxed">Choose your Google Meet, Zoom, Teams or browser tab and enable its audio in Chrome's sharing dialog. Voxnote will record the shared audio together with your microphone.</p></div></div>
+              <div className="rounded-2xl bg-indigo-50 border border-indigo-100 p-4 flex gap-3"><ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" /><div><p className="text-sm font-bold text-indigo-950">Capture a meeting from your desktop</p><p className="text-xs text-indigo-700/80 mt-1 leading-relaxed">Choose your Google Meet, Zoom, Teams or browser tab and enable its audio in Chrome's sharing dialog. Voxnote records the shared meeting audio together with your microphone.</p></div></div>
               <label className="block"><span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">Meeting title</span><input value={title} onChange={(e) => setTitle(e.target.value)} className="mt-2 w-full px-4 py-3 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 text-sm font-semibold" placeholder="e.g. Product Strategy Meeting" /></label>
               <div className="flex items-center justify-between text-xs text-slate-400"><span>Maximum MVP capture: 20 minutes</span><span>Chrome / Edge recommended</span></div>
               <button type="button" onClick={startMeeting} className="w-full py-3.5 rounded-2xl bg-indigo-600 text-white font-extrabold text-sm hover:bg-indigo-500 transition flex items-center justify-center gap-2"><MonitorUp className="w-4 h-4" /> Start Meeting Capture</button>
