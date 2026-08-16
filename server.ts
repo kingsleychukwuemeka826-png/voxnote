@@ -143,10 +143,10 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), as
   }
 });
 
-// Meeting recordings are sent as base64 WebM. Keep enough headroom for a
-// normal 20-minute browser recording while still rejecting unreasonable
-// request sizes.
-app.use(express.json({ limit: '50mb' }));
+// Meeting recordings are sent as base64 audio. Keep enough headroom for
+// the MVP's 20-minute speech-optimized WAV recordings while still rejecting
+// unreasonable request sizes.
+app.use(express.json({ limit: '60mb' }));
 
 // Initialize a Paystack transaction for the Pro subscription.
 app.post('/api/billing/create-checkout-session', async (req, res) => {
@@ -243,8 +243,8 @@ app.get('/api/health', (req, res) => {
 
 // AI Note Processing endpoint
 // Supports typed transcripts, document images, and browser-recorded audio.
-// Meeting Mode sends a WebM recording here so Gemini can transcribe and
-// structure the meeting in the same request.
+// Meeting Mode sends a speech-optimized WAV recording here so Gemini can
+// transcribe and structure the meeting in the same request.
 app.post('/api/generate-note', async (req, res) => {
   try {
     const { transcript, titleHint, categoryHint, imageBase64, audioBase64 } = req.body;
@@ -290,7 +290,14 @@ Extract:
     if (audioBase64) {
       const base64Data = audioBase64.includes(',') ? audioBase64.split(',')[1] : audioBase64;
       const mimeMatch = audioBase64.match(/^data:([^;,]+)[;,]/i);
-      const mimeType = mimeMatch?.[1] || 'audio/webm';
+      const mimeType = mimeMatch?.[1] || 'audio/wav';
+
+      // Meeting Mode converts the browser's WebM recording to WAV before
+      // upload. Gemini's documented audio inputs include WAV, MP3, AAC,
+      // OGG, FLAC and AIFF; WAV is the safest browser-compatible path here.
+      if (mimeType !== 'audio/wav' && mimeType !== 'audio/mp3' && mimeType !== 'audio/aac' && mimeType !== 'audio/ogg' && mimeType !== 'audio/flac' && mimeType !== 'audio/aiff') {
+        throw new Error(`Unsupported meeting audio format: ${mimeType}. Voxnote expects a speech-compatible WAV/MP3/AAC/OGG/FLAC/AIFF recording.`);
+      }
 
       parts.push({
         inlineData: {
@@ -356,9 +363,10 @@ Extract:
     res.json(parsedNote);
   } catch (error: any) {
     console.error('Error generating note:', error);
+    const message = error?.message || 'Unknown Gemini processing error.';
     res.status(500).json({
       error: 'Failed to process note with AI',
-      details: error.message,
+      details: message,
     });
   }
 });
