@@ -2,7 +2,7 @@ import React from 'react';
 import { ViewTab } from '../types';
 import { OnlineStatusIndicator } from './OnlineStatusIndicator';
 import { Logo } from './Logo';
-import { Mic, FileText, Calendar, Search, Settings, Sparkles, Camera, Zap, Crown, HelpCircle } from 'lucide-react';
+import { Mic, FileText, Calendar, Search, Settings, ClipboardPaste, Camera, Zap, Crown, HelpCircle } from 'lucide-react';
 
 interface DesktopSidebarProps {
   activeTab: ViewTab;
@@ -36,8 +36,8 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
   ];
 
   return (
-    <aside className="w-64 xl:w-72 bg-white/90 backdrop-blur-xl border border-slate-200/70 rounded-[28px] p-4 shadow-[0_18px_50px_rgba(15,23,42,0.06)] flex flex-col justify-between shrink-0 h-[calc(100vh-2rem)] sticky top-4 overflow-y-auto">
-      <div className="space-y-5">
+    <aside className="relative z-30 w-64 xl:w-72 bg-white/90 backdrop-blur-xl border border-slate-200/70 rounded-[28px] p-4 shadow-[0_18px_50px_rgba(15,23,42,0.06)] flex flex-col justify-between shrink-0 h-[calc(100vh-2rem)] sticky top-4 overflow-visible">
+      <div className="space-y-5 min-h-0">
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-3">
             <Logo className="w-10 h-10" rounded="rounded-[14px]" />
@@ -58,7 +58,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
             Record a note
           </button>
           <div className="grid grid-cols-2 gap-1.5 mt-1.5">
-            <button onClick={onOpenPasteSummarize} className="py-2.5 rounded-[13px] text-[10px] font-bold text-slate-300 hover:text-white hover:bg-white/10 flex items-center justify-center gap-1.5 transition-colors"><Sparkles className="w-3.5 h-3.5" />Paste</button>
+            <button onClick={onOpenPasteSummarize} className="py-2.5 rounded-[13px] text-[10px] font-bold text-slate-300 hover:text-white hover:bg-white/10 flex items-center justify-center gap-1.5 transition-colors"><ClipboardPaste className="w-3.5 h-3.5" />Paste</button>
             <button onClick={onOpenDocScanner} className="py-2.5 rounded-[13px] text-[10px] font-bold text-slate-300 hover:text-white hover:bg-white/10 flex items-center justify-center gap-1.5 transition-colors"><Camera className="w-3.5 h-3.5" />Scan</button>
           </div>
         </div>
