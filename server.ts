@@ -184,7 +184,9 @@ app.post('/api/billing/create-checkout-session', async (req, res) => {
   }
 });
 
-// Generate a Paystack-hosted manage-subscription link.
+// Generate a Paystack-hosted manage-subscription link. If the webhook has
+// not stored the subscription code yet, recover it from the customer's
+// Paystack subscriptions before generating the management link.
 app.post('/api/billing/create-portal-session', async (req, res) => {
   if (!getPaystackSecretKey()) {
     return res.status(200).json({ configured: false });
@@ -201,17 +203,62 @@ app.post('/api/billing/create-portal-session', async (req, res) => {
       return res.status(500).json({ error: 'Firebase Admin is not configured — cannot look up billing record.' });
     }
 
-    const billingDoc = await db.doc(`users/${uid}/meta/billing`).get();
-    const subscriptionCode = billingDoc.data()?.paystackSubscriptionCode;
-    if (!subscriptionCode) {
-      return res.status(404).json({ error: 'No active Paystack subscription found for this account yet.' });
+    const billingRef = db.doc(`users/${uid}/meta/billing`);
+    const billingDoc = await billingRef.get();
+    const billing = billingDoc.data() || {};
+
+    let subscriptionCode = billing.paystackSubscriptionCode;
+    const customerCode = billing.paystackCustomerCode;
+
+    // Webhooks can arrive out of order. If charge.success created the
+    // billing record but subscription.create has not stored its code yet,
+    // recover the customer's active subscription directly from Paystack.
+    if (!subscriptionCode && customerCode) {
+      console.log(`Recovering Paystack subscription for ${uid} from customer ${customerCode}...`);
+
+      const customerResult = await paystackRequest(`/customer/${encodeURIComponent(customerCode)}`);
+      const subscriptions = customerResult.data?.subscriptions || [];
+
+      const activeSubscription = subscriptions.find(
+        (subscription: any) =>
+          subscription.status === 'active' || subscription.status === 'non-renewing'
+      );
+
+      subscriptionCode = activeSubscription?.subscription_code;
+
+      if (subscriptionCode) {
+        await billingRef.set(
+          {
+            paystackSubscriptionCode: subscriptionCode,
+            status: activeSubscription.status,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+        console.log(`Recovered Paystack subscription ${subscriptionCode} for ${uid}.`);
+      }
     }
 
-    const result = await paystackRequest(`/subscription/${subscriptionCode}/manage/link`);
+    if (!subscriptionCode) {
+      return res.status(404).json({
+        error: 'We could not find an active Paystack subscription for this account yet. If you just paid, please wait a moment and try again.',
+      });
+    }
+
+    const result = await paystackRequest(
+      `/subscription/${encodeURIComponent(subscriptionCode)}/manage/link`
+    );
+
+    if (!result.data?.link) {
+      throw new Error('Paystack did not return a billing management link.');
+    }
+
     res.json({ configured: true, url: result.data.link });
   } catch (err: any) {
     console.error('Error creating Paystack manage link:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({
+      error: err?.message || 'Unable to open billing management right now. Please try again.',
+    });
   }
 });
 
@@ -254,8 +301,8 @@ app.post('/api/generate-note', async (req, res) => {
     }
 
     const ai = getGeminiClient();
-
-    // Fallback if API key is not present or AI fails.
+    
+    // Fallback if API key is not present or AI fails
     if (!ai) {
       const fallbackTitle = titleHint || (transcript ? transcript.slice(0, 30) + '...' : 'Quick Voice Note');
       const textSample = transcript || (audioBase64 ? 'Meeting audio recording' : 'Scanned document snippet');
@@ -286,15 +333,11 @@ Extract:
 `;
 
     const parts: any[] = [];
-
     if (audioBase64) {
       const base64Data = audioBase64.includes(',') ? audioBase64.split(',')[1] : audioBase64;
       const mimeMatch = audioBase64.match(/^data:([^;,]+)[;,]/i);
       const mimeType = mimeMatch?.[1] || 'audio/wav';
 
-      // Meeting Mode converts the browser's WebM recording to WAV before
-      // upload. Gemini's documented audio inputs include WAV, MP3, AAC,
-      // OGG, FLAC and AIFF; WAV is the safest browser-compatible path here.
       if (mimeType !== 'audio/wav' && mimeType !== 'audio/mp3' && mimeType !== 'audio/aac' && mimeType !== 'audio/ogg' && mimeType !== 'audio/flac' && mimeType !== 'audio/aiff') {
         throw new Error(`Unsupported meeting audio format: ${mimeType}. Voxnote expects a speech-compatible WAV/MP3/AAC/OGG/FLAC/AIFF recording.`);
       }
@@ -314,15 +357,15 @@ Extract:
       parts.push({
         inlineData: {
           mimeType,
-          data: base64Data,
-        },
+          data: base64Data
+        }
       });
       parts.push({
-        text: `Transcribe and summarize this document or handwritten page into a structured note. User context: ${transcript || 'No extra context'}`,
+        text: `Transcribe and summarize this document or handwritten page into a structured note. User context: ${transcript || 'No extra context'}`
       });
     } else {
       parts.push({
-        text: `Here is the spoken or typed audio transcript:\n\n"${transcript}"\n\nPlease structure this into a clean note.`,
+        text: `Here is the spoken or typed audio transcript:\n\n"${transcript}"\n\nPlease structure this into a clean note.`
       });
     }
 
@@ -340,21 +383,21 @@ Extract:
             formattedContent: { type: Type.STRING },
             tags: {
               type: Type.ARRAY,
-              items: { type: Type.STRING },
+              items: { type: Type.STRING }
             },
             keyTakeaways: {
               type: Type.ARRAY,
-              items: { type: Type.STRING },
+              items: { type: Type.STRING }
             },
             actionItems: {
               type: Type.ARRAY,
-              items: { type: Type.STRING },
+              items: { type: Type.STRING }
             },
-            sentiment: { type: Type.STRING },
+            sentiment: { type: Type.STRING }
           },
-          required: ['title', 'summary', 'formattedContent', 'tags', 'keyTakeaways', 'actionItems'],
-        },
-      },
+          required: ['title', 'summary', 'formattedContent', 'tags', 'keyTakeaways', 'actionItems']
+        }
+      }
     });
 
     const responseText = response.text || '{}';
@@ -366,7 +409,7 @@ Extract:
     const message = error?.message || 'Unknown Gemini processing error.';
     res.status(500).json({
       error: 'Failed to process note with AI',
-      details: message,
+      details: message
     });
   }
 });
@@ -382,8 +425,8 @@ app.post('/api/ai-search', async (req, res) => {
     const ai = getGeminiClient();
     if (!ai) {
       return res.json({
-        answer: 'AI search fallback: Configure GEMINI_API_KEY in secrets to get AI synthesized answers.',
-        matchingNoteIds: notes ? notes.slice(0, 3).map((n: any) => n.id) : [],
+        answer: "AI search fallback: Configure GEMINI_API_KEY in secrets to get AI synthesized answers.",
+        matchingNoteIds: notes ? notes.slice(0, 3).map((n: any) => n.id) : []
       });
     }
 
@@ -391,7 +434,13 @@ app.post('/api/ai-search', async (req, res) => {
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
-      contents: `You are an AI assistant searching through user notes.\nQuery: "${query}"\n\nUser Notes Collection:\n${notesSummary}\n\nProvide a direct, helpful synthesis answer to the user's question based on their notes, and return the IDs of the relevant notes.`,
+      contents: `You are an AI assistant searching through user notes.
+Query: "${query}"
+
+User Notes Collection:
+${notesSummary}
+
+Provide a direct, helpful synthesis answer to the user's question based on their notes, and return the IDs of the relevant notes.`,
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -400,12 +449,12 @@ app.post('/api/ai-search', async (req, res) => {
             answer: { type: Type.STRING },
             matchingNoteIds: {
               type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
+              items: { type: Type.STRING }
+            }
           },
-          required: ['answer', 'matchingNoteIds'],
-        },
-      },
+          required: ['answer', 'matchingNoteIds']
+        }
+      }
     });
 
     const parsed = JSON.parse(response.text || '{}');
@@ -431,7 +480,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+ app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
   });
 }
