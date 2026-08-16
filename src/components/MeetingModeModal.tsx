@@ -4,15 +4,8 @@ import { Note } from '../types';
 
 interface MeetingModeModalProps { isOpen: boolean; onClose: () => void; onSaveNote: (note: Note) => void; }
 type State = 'idle' | 'requesting' | 'recording' | 'paused' | 'processing' | 'done' | 'error';
-
-type SpeechRecognitionLike = {
-  continuous: boolean; interimResults: boolean; lang: string;
-  start: (audioTrack?: MediaStreamTrack) => void; stop: () => void; abort: () => void;
-  onresult: ((event: any) => void) | null; onerror: ((event: any) => void) | null; onend: (() => void) | null;
-};
-
+type SpeechRecognitionLike = { continuous: boolean; interimResults: boolean; lang: string; start: (audioTrack?: MediaStreamTrack) => void; stop: () => void; abort: () => void; onresult: ((event: any) => void) | null; onerror: ((event: any) => void) | null; onend: (() => void) | null; };
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
-
 declare global { interface Window { SpeechRecognition?: SpeechRecognitionCtor; webkitSpeechRecognition?: SpeechRecognitionCtor; } }
 
 const MAX_SECONDS = 20 * 60;
@@ -74,14 +67,16 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen, onCl
     };
     recognition.onerror = (event) => {
       if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
+        shouldRestartRef.current = false;
         setError('Microphone/speech recognition permission was denied.');
         setState('error');
       }
     };
     recognition.onend = () => {
-      if (shouldRestartRef.current && state === 'recording') {
+      if (!shouldRestartRef.current) return;
+      window.setTimeout(() => {
         try { track ? recognition.start(track) : recognition.start(); } catch { /* browser may already be restarting */ }
-      }
+      }, 150);
     };
     recognitionRef.current = recognition;
     try {
@@ -104,26 +99,13 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen, onCl
       display.getVideoTracks()[0]?.addEventListener('ended', stopMeeting);
       startedAtRef.current = Date.now(); pausedAtRef.current = 0; pausedTotalRef.current = 0; setElapsed(0);
       shouldRestartRef.current = true;
-      try { startRecognition(audioTrack); }
-      catch { startRecognition(); }
+      try { startRecognition(audioTrack); } catch { startRecognition(); }
       setState('recording');
     } catch (e: any) { cleanup(); setError(e?.message || 'Capture permission was cancelled.'); setState('error'); }
   };
 
-  const pauseMeeting = () => {
-    if (state !== 'recording') return;
-    shouldRestartRef.current = false;
-    try { recognitionRef.current?.stop(); } catch { /* ignore */ }
-    pausedAtRef.current = Date.now(); setState('paused');
-  };
-
-  const resumeMeeting = () => {
-    if (state !== 'paused') return;
-    if (pausedAtRef.current) pausedTotalRef.current += Date.now() - pausedAtRef.current;
-    pausedAtRef.current = 0; shouldRestartRef.current = true;
-    try { recognitionRef.current?.start(displayRef.current?.getAudioTracks()[0]); } catch { try { recognitionRef.current?.start(); } catch { /* ignore */ } }
-    setState('recording');
-  };
+  const pauseMeeting = () => { if (state !== 'recording') return; shouldRestartRef.current = false; try { recognitionRef.current?.stop(); } catch { /* ignore */ } pausedAtRef.current = Date.now(); setState('paused'); };
+  const resumeMeeting = () => { if (state !== 'paused') return; if (pausedAtRef.current) pausedTotalRef.current += Date.now() - pausedAtRef.current; pausedAtRef.current = 0; shouldRestartRef.current = true; try { recognitionRef.current?.start(displayRef.current?.getAudioTracks()[0]); } catch { try { recognitionRef.current?.start(); } catch { /* ignore */ } } setState('recording'); };
 
   const stopMeeting = async () => {
     if (!['recording', 'paused'].includes(state)) return;
@@ -150,7 +132,7 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen, onCl
       <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between"><div className="flex items-center gap-3"><div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center"><AudioLines className="w-5 h-5" /></div><div><h2 className="font-extrabold text-slate-900">Meeting Mode</h2><p className="text-xs text-slate-400 mt-1">Pro desktop meeting transcription</p></div></div><button onClick={onClose} disabled={state === 'recording' || state === 'paused' || state === 'processing'} className="w-9 h-9 rounded-xl hover:bg-slate-100 flex items-center justify-center disabled:opacity-30"><X className="w-4 h-4" /></button></div>
       <div className="p-6 space-y-5">
         {state === 'idle' && <><div className="rounded-2xl bg-indigo-50 border border-indigo-100 p-4 flex gap-3"><ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" /><div><p className="text-sm font-bold text-indigo-950">Capture a meeting from your desktop</p><p className="text-xs text-indigo-700/80 mt-1 leading-relaxed">Select your Google Meet, Zoom, Teams or browser tab and enable Share audio. Voxnote will transcribe the meeting and turn it into structured notes.</p></div></div><input value={title} onChange={e => setTitle(e.target.value)} className="w-full px-4 py-3 rounded-2xl border border-slate-200 text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-100" placeholder="Meeting title" /><button onClick={startMeeting} className="w-full py-3.5 rounded-2xl bg-indigo-600 text-white font-extrabold text-sm flex items-center justify-center gap-2 hover:bg-indigo-500"><MonitorUp className="w-4 h-4" />Start Meeting Capture</button></>}
-        {(state === 'requesting' || state === 'recording' || state === 'paused') && <div className="space-y-5"><div className="text-center"><div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-rose-50 text-rose-700 text-xs font-extrabold"><span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />{state === 'requesting' ? 'Waiting for permission' : state === 'paused' ? 'Meeting paused' : 'Meeting recording'}</div><div className="text-5xl font-black text-slate-900 tabular-nums mt-5">{time}</div><p className="text-xs text-slate-400 mt-2">{source}</p></div><div className="max-h-44 overflow-y-auto rounded-2xl bg-slate-50 border border-slate-100 p-4 text-xs leading-relaxed text-slate-600">{transcript || interim || 'Listening for the meeting…'}{interim && <span className="text-indigo-500"> {interim}</span>}</div>{state !== 'requesting' && <div className="flex justify-center gap-3"><button onClick={state === 'paused' ? resumeMeeting : pauseMeeting} className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-700 flex items-center justify-center">{state === 'paused' ? <Play className="w-5 h-5" /> : <Pause className="w-5 h-5" />}</button><button onClick={stopMeeting} className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center"><CircleStop className="w-5 h-5" /></button></div>}</div>}
+        {(state === 'requesting' || state === 'recording' || state === 'paused') && <div className="space-y-5"><div className="text-center"><div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-rose-50 text-rose-700 text-xs font-extrabold"><span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />{state === 'requesting' ? 'Waiting for permission' : state === 'paused' ? 'Meeting paused' : 'Meeting recording'}</div><div className="text-5xl font-black text-slate-900 tabular-nums mt-5">{time}</div><p className="text-xs text-slate-400 mt-2">{source}</p></div><div className="max-h-44 overflow-y-auto rounded-2xl bg-slate-50 border border-slate-100 p-4 text-xs leading-relaxed text-slate-600">{transcript || 'Listening for the meeting…'}{interim && <span className="text-indigo-500"> {interim}</span>}</div>{state !== 'requesting' && <div className="flex justify-center gap-3"><button onClick={state === 'paused' ? resumeMeeting : pauseMeeting} className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-700 flex items-center justify-center">{state === 'paused' ? <Play className="w-5 h-5" /> : <Pause className="w-5 h-5" />}</button><button onClick={stopMeeting} className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center"><CircleStop className="w-5 h-5" /></button></div>}</div>}
         {state === 'processing' && <div className="py-10 text-center"><AudioLines className="w-10 h-10 mx-auto text-indigo-600 animate-pulse" /><h3 className="mt-4 font-extrabold text-slate-900">Turning your meeting into notes…</h3><p className="text-xs text-slate-400 mt-2">Voxnote is summarizing the transcript.</p></div>}
         {state === 'done' && <div className="py-8 text-center"><h3 className="font-extrabold text-slate-900">Meeting note created</h3><p className="text-xs text-slate-400 mt-2">Your meeting has been saved to All Notes.</p><button onClick={onClose} className="mt-6 px-5 py-3 rounded-2xl bg-indigo-600 text-white text-xs font-extrabold">Done</button></div>}
         {state === 'error' && <div className="space-y-4"><div className="rounded-2xl bg-rose-50 border border-rose-100 p-4 text-sm text-rose-700">{error}</div><button onClick={() => { setError(''); setState('idle'); }} className="w-full py-3 rounded-2xl bg-slate-900 text-white text-xs font-extrabold">Try again</button></div>}
