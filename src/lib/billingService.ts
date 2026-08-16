@@ -1,12 +1,16 @@
 // Thin client for the Paystack billing endpoints in server.ts.
-// Both calls gracefully report { configured: false } if Paystack hasn't
-// been set up on the server yet, so callers can fall back to a simulated flow.
+// Keep the API origin configurable so the UI can work when the frontend is
+// previewed from a different host while the Express billing API remains on Render.
 
 export interface CheckoutResult {
   configured: boolean;
   url?: string;
   error?: string;
 }
+
+const BILLING_API_ORIGIN =
+  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ||
+  'https://voxnote-fgaf.onrender.com';
 
 async function parseBillingResponse(res: Response): Promise<CheckoutResult> {
   let data: any = null;
@@ -29,10 +33,7 @@ async function parseBillingResponse(res: Response): Promise<CheckoutResult> {
       data,
     });
 
-    return {
-      configured: true,
-      error: message,
-    };
+    return { configured: true, error: message };
   }
 
   return data || {
@@ -41,34 +42,31 @@ async function parseBillingResponse(res: Response): Promise<CheckoutResult> {
   };
 }
 
-export async function createCheckoutSession(
+async function postBilling(path: string, body: Record<string, unknown>): Promise<CheckoutResult> {
+  try {
+    const res = await fetch(`${BILLING_API_ORIGIN}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return await parseBillingResponse(res);
+  } catch (e) {
+    console.error('[Voxnote] Failed to reach billing server:', e);
+    return {
+      configured: false,
+      error: `Could not reach the billing server at ${BILLING_API_ORIGIN}.`,
+    };
+  }
+}
+
+export function createCheckoutSession(
   uid: string,
   email: string | undefined,
   plan: 'monthly' | 'annual'
 ): Promise<CheckoutResult> {
-  try {
-    const res = await fetch('/api/billing/create-checkout-session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid, email, plan }),
-    });
-    return await parseBillingResponse(res);
-  } catch (e) {
-    console.error('[Voxnote] Failed to reach billing server:', e);
-    return { configured: false, error: 'Could not reach the billing server.' };
-  }
+  return postBilling('/api/billing/create-checkout-session', { uid, email, plan });
 }
 
-export async function createPortalSession(uid: string): Promise<CheckoutResult> {
-  try {
-    const res = await fetch('/api/billing/create-portal-session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid }),
-    });
-    return await parseBillingResponse(res);
-  } catch (e) {
-    console.error('[Voxnote] Failed to reach billing server:', e);
-    return { configured: false, error: 'Could not reach the billing server.' };
-  }
+export function createPortalSession(uid: string): Promise<CheckoutResult> {
+  return postBilling('/api/billing/create-portal-session', { uid });
 }
