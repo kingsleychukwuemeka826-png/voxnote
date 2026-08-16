@@ -4,7 +4,6 @@ import {
   Check,
   Zap,
   ShieldCheck,
-  Calendar,
   Mic,
   FileSpreadsheet,
   Bot,
@@ -14,7 +13,6 @@ import {
   Lock,
   CheckCircle2,
   Clock,
-  Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AppSettings, AuthUser, Note } from '../types';
@@ -92,7 +90,8 @@ export const PricingView: React.FC<PricingViewProps> = ({
     setTimeout(() => {
       setIsUpgrading(false);
       setUpgradeSuccess(true);
-      onUpdateSettings({ ...settings, isProPlan: true, autoJoinMeetings: true });
+      // Calendar auto-joining is not available yet, so do not enable it here.
+      onUpdateSettings({ ...settings, isProPlan: true, autoJoinMeetings: false });
       setTimeout(() => {
         if (onClose) onClose();
       }, 2000);
@@ -114,16 +113,13 @@ export const PricingView: React.FC<PricingViewProps> = ({
     }
   };
 
-  const proPriceMonthly = 9.99;
-  const proPriceAnnualMonthly = 6.99;
-  const proAnnualTotal = 83.88;
+  // Launch pricing: affordable enough for individual users while leaving
+  // room for AI, hosting, storage, and payment-processing costs.
+  const proPriceMonthly = 7.99;
+  const proPriceAnnualMonthly = 5.83;
+  const proAnnualTotal = 69.99;
 
   const proFeatures = [
-    {
-      title: 'Automated Calendar Auto-Joining',
-      desc: 'Seamless AI meeting bot for Zoom, Google Meet & Microsoft Teams',
-      icon: Calendar,
-    },
     {
       title: `${PRO_MONTHLY_MINUTES.toLocaleString()} Transcription Minutes / mo`,
       desc: '5x the free tier, plus multi-hour audio recording uploads',
@@ -143,13 +139,10 @@ export const PricingView: React.FC<PricingViewProps> = ({
 
   return (
     <div className={`w-full max-w-4xl mx-auto ${isModal ? 'p-2 sm:p-4' : 'pb-24 pt-2'}`}>
-      {/* Top Card / Container */}
       <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-8 shadow-xl relative overflow-hidden">
-        {/* Background Decorative Glow */}
         <div className="absolute -top-24 -right-24 w-72 h-72 bg-gradient-to-br from-indigo-200/40 via-purple-200/30 to-transparent rounded-full blur-3xl pointer-events-none" />
         <div className="absolute -bottom-24 -left-24 w-72 h-72 bg-gradient-to-tr from-purple-200/30 via-indigo-200/20 to-transparent rounded-full blur-3xl pointer-events-none" />
 
-        {/* Modal Header Close Button */}
         {isModal && onClose && (
           <button
             onClick={onClose}
@@ -160,7 +153,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
           </button>
         )}
 
-        {/* Success Modal / Banner */}
         <AnimatePresence>
           {upgradeSuccess && (
             <motion.div
@@ -176,7 +168,7 @@ export const PricingView: React.FC<PricingViewProps> = ({
                 <div className="space-y-1.5">
                   <h3 className="text-xl font-extrabold text-slate-900 tracking-tight">Welcome to Pro! 🎉</h3>
                   <p className="text-xs sm:text-sm font-medium text-slate-600">
-                    Your 7-day free trial is active. {PRO_MONTHLY_MINUTES.toLocaleString()} monthly transcription minutes and the calendar bot are now enabled.
+                    Your 7-day free trial is active. {PRO_MONTHLY_MINUTES.toLocaleString()} monthly transcription minutes, advanced AI personas, and expanded exports are now enabled.
                   </p>
                 </div>
                 <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-3.5 py-1 rounded-full border border-indigo-100">
@@ -187,7 +179,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
           )}
         </AnimatePresence>
 
-        {/* Header Section */}
         <div className="text-center space-y-3 max-w-xl mx-auto relative z-10">
           <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-gradient-to-r from-indigo-50 via-purple-50 to-indigo-50 text-indigo-700 text-xs font-extrabold tracking-wide border border-indigo-100 shadow-2xs">
             <Sparkles className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />
@@ -199,10 +190,9 @@ export const PricingView: React.FC<PricingViewProps> = ({
           </h1>
 
           <p className="text-xs sm:text-sm font-medium text-slate-500 leading-relaxed">
-            Unlock automated calendar meetings, {PRO_MONTHLY_MINUTES.toLocaleString()} transcription minutes/mo, and advanced AI summaries.
+            Unlock {PRO_MONTHLY_MINUTES.toLocaleString()} transcription minutes/mo, advanced AI personas, and expanded exports.
           </p>
 
-          {/* Billing Cycle Toggle Switch */}
           <div className="pt-2 flex items-center justify-center">
             <div className="bg-slate-100 p-1 rounded-2xl flex items-center border border-slate-200/80 relative shadow-inner">
               <button
@@ -228,16 +218,14 @@ export const PricingView: React.FC<PricingViewProps> = ({
               >
                 <span>Annual Billing</span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500 text-white shadow-2xs">
-                  Save 30%
+                  Save 27%
                 </span>
               </button>
             </div>
           </div>
         </div>
 
-        {/* Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8 relative z-10">
-          {/* Free Tier Card */}
           <div className="bg-slate-50/80 border border-slate-200/80 rounded-3xl p-6 flex flex-col justify-between space-y-6">
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -250,7 +238,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
                 </span>
               </div>
 
-              {/* Price */}
               <div>
                 <div className="flex items-baseline gap-1">
                   <span className="text-3xl font-extrabold text-slate-900">$0</span>
@@ -258,7 +245,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
                 </div>
               </div>
 
-              {/* Current Usage Progress Bar */}
               <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 space-y-2 shadow-2xs">
                 <div className="flex items-center justify-between text-xs font-semibold">
                   <span className="text-slate-600 flex items-center gap-1.5">
@@ -279,7 +265,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
                 <p className="text-[10px] text-slate-400 font-medium">{FREE_MONTHLY_MINUTES} minutes reset monthly</p>
               </div>
 
-              {/* Free Features List */}
               <ul className="space-y-2.5 text-xs text-slate-600 pt-2">
                 <li className="flex items-center gap-2">
                   <Check className="w-4 h-4 text-emerald-500 shrink-0" />
@@ -295,16 +280,11 @@ export const PricingView: React.FC<PricingViewProps> = ({
                 </li>
                 <li className="flex items-center gap-2 text-slate-400 line-through">
                   <X className="w-4 h-4 text-slate-300 shrink-0" />
-                  <span>Automated calendar meeting bot</span>
-                </li>
-                <li className="flex items-center gap-2 text-slate-400 line-through">
-                  <X className="w-4 h-4 text-slate-300 shrink-0" />
-                  <span>Custom AI Personas & direct workspace export</span>
+                  <span>Advanced AI Personas & expanded exports</span>
                 </li>
               </ul>
             </div>
 
-            {/* Current Plan Button */}
             <button
               onClick={isPro ? handleManageBilling : undefined}
               disabled={!isPro || isUpgrading}
@@ -318,9 +298,7 @@ export const PricingView: React.FC<PricingViewProps> = ({
             </button>
           </div>
 
-          {/* Pro Tier Card (Highlighted / Featured) */}
           <div className="relative bg-gradient-to-b from-indigo-50/90 via-white to-purple-50/50 border-2 border-indigo-600 rounded-3xl p-6 flex flex-col justify-between space-y-6 shadow-xl shadow-indigo-100/50">
-            {/* Featured Badge */}
             <div className="absolute -top-3.5 right-6 bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-[10px] font-extrabold uppercase tracking-widest px-3 py-1 rounded-full shadow-md flex items-center gap-1">
               <Crown className="w-3 h-3 text-amber-300" /> Most Popular
             </div>
@@ -329,13 +307,12 @@ export const PricingView: React.FC<PricingViewProps> = ({
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-lg font-extrabold text-slate-900 flex items-center gap-1.5">
-                    Pro Plan <Sparkles className="w-4 h-4 text-indigo-600" />
+                    Pro Plan
                   </h3>
                   <p className="text-xs text-indigo-700 font-semibold mt-0.5">For Power Users & Professionals</p>
                 </div>
               </div>
 
-              {/* Pricing Display */}
               <div>
                 <div className="flex items-baseline gap-1.5">
                   <span className="text-4xl sm:text-5xl font-extrabold text-slate-900 tracking-tight">
@@ -345,11 +322,11 @@ export const PricingView: React.FC<PricingViewProps> = ({
                 </div>
                 {billingCycle === 'annual' ? (
                   <p className="text-xs font-bold text-indigo-700 mt-1">
-                    Billed annually as ${proAnnualTotal}/yr (Save $36/year)
+                    Billed annually as ${proAnnualTotal}/yr (Save $25.89/year)
                   </p>
                 ) : (
                   <p className="text-xs font-medium text-slate-500 mt-1">
-                    Billed monthly. Switch to annual to save 30%.
+                    Billed monthly. Switch to annual to save 27%.
                   </p>
                 )}
               </div>
@@ -374,7 +351,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
                 </div>
               )}
 
-              {/* Pro Feature List */}
               <div className="space-y-3 pt-2">
                 <p className="text-[11px] font-extrabold uppercase tracking-wider text-indigo-900">
                   EVERYTHING IN PRO INCLUDES:
@@ -386,7 +362,7 @@ export const PricingView: React.FC<PricingViewProps> = ({
                     return (
                       <div key={idx} className="flex items-start gap-3">
                         <div className="p-1 rounded-lg bg-indigo-600 text-white shrink-0 mt-0.5 shadow-2xs">
-                          <Check className="w-3.5 h-3.5" />
+                          <IconComp className="w-3.5 h-3.5" />
                         </div>
                         <div>
                           <p className="text-xs font-bold text-slate-900 leading-snug">{item.title}</p>
@@ -399,7 +375,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
               </div>
             </div>
 
-            {/* Pro CTA Section */}
             <div className="space-y-3 pt-2">
               {isPro ? (
                 <button
@@ -437,7 +412,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
                 </p>
               )}
 
-              {/* Footer Note */}
               <div className="flex items-center justify-center gap-2 text-[11px] text-slate-500 font-medium pt-1">
                 <Lock className="w-3.5 h-3.5 text-slate-400" />
                 <span>
@@ -448,7 +422,6 @@ export const PricingView: React.FC<PricingViewProps> = ({
           </div>
         </div>
 
-        {/* Footer Guarantee Badges */}
         <div className="mt-8 pt-6 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-3 text-center">
           <div className="flex items-center justify-center gap-2 text-xs font-semibold text-slate-600">
             <ShieldCheck className="w-4 h-4 text-indigo-600" />
