@@ -2,16 +2,11 @@ const expressPath = require.resolve('express');
 const originalExpress = require(expressPath);
 
 function sendJson(res, statusCode, body) {
-  // Use the native Node response API instead of res.status()/res.json().
-  // The live-token route can be registered before Express has attached its
-  // response helpers, which previously caused `res.status is not a function`.
   res.statusCode = statusCode;
   if (typeof res.setHeader === 'function') {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
   }
-  const serialized = JSON.stringify(body);
-  if (typeof res.end === 'function') return res.end(serialized);
-  return serialized;
+  return res.end(JSON.stringify(body));
 }
 
 function registerLiveTokenRoute(app) {
@@ -25,57 +20,40 @@ function registerLiveTokenRoute(app) {
         return sendJson(res, 503, { error: 'GEMINI_API_KEY is not configured on Render.' });
       }
 
-      const tokenResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
-        method: 'POST',
-        headers: {
-          'x-goog-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      // Use Google's official GenAI SDK for ephemeral-token provisioning.
+      // This avoids subtle REST schema/version differences on auth_tokens.
+      const { GoogleGenAI } = await import('@google/genai');
+      const client = new GoogleGenAI({ apiKey });
+
+      const token = await client.authTokens.create({
+        config: {
           uses: 1,
           expireTime: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
           liveConnectConstraints: {
-            model: 'models/gemini-3.1-flash-live-preview',
+            model: 'gemini-3.1-flash-live-preview',
             config: {
               sessionResumption: {},
+              contextWindowCompression: { slidingWindow: {} },
               responseModalities: ['AUDIO'],
+              inputAudioTranscription: {},
             },
           },
-        }),
+        },
       });
 
-      const rawBody = await tokenResponse.text();
-      let payload = null;
-      try {
-        payload = rawBody ? JSON.parse(rawBody) : null;
-      } catch (_) {
-        console.error('Gemini Live token response was not JSON:', {
-          status: tokenResponse.status,
-          body: rawBody.slice(0, 1000),
-        });
+      if (!token?.name) {
+        console.error('Gemini Live token response did not contain a token name:', token);
         return sendJson(res, 502, {
-          error: `Gemini token service returned a non-JSON response (HTTP ${tokenResponse.status}).`,
+          error: 'Gemini token provisioning returned no token.'
         });
       }
 
-      if (!tokenResponse.ok || !payload?.name) {
-        const providerMessage = payload?.error?.message || payload?.message;
-        console.error('Gemini Live token provisioning failed:', {
-          status: tokenResponse.status,
-          payload,
-        });
-        return sendJson(res, 502, {
-          error: providerMessage
-            ? `Gemini token provisioning failed: ${providerMessage}`
-            : `Gemini Live token provisioning failed (HTTP ${tokenResponse.status}).`,
-        });
-      }
-
-      return sendJson(res, 200, { token: payload.name });
+      return sendJson(res, 200, { token: token.name });
     } catch (error) {
-      console.error('Gemini Live token error:', error);
-      return sendJson(res, 500, {
-        error: error?.message || 'Failed to create Gemini Live token.'
+      console.error('Gemini Live token provisioning failed:', error);
+      const message = error?.message || String(error) || 'Failed to create Gemini Live token.';
+      return sendJson(res, 502, {
+        error: `Gemini token provisioning failed: ${message}`
       });
     }
   });
