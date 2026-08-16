@@ -12,13 +12,9 @@ function registerLiveTokenRoute(app) {
         return res.status(503).json({ error: 'GEMINI_API_KEY is not configured on Render.' });
       }
 
-      const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-      const newSessionExpireTime = new Date(Date.now() + 2 * 60 * 1000).toISOString();
-
-      // Keep the ephemeral-token constraints deliberately minimal. Gemini's
-      // token service is strict about which Live setup fields can be locked.
-      // The client adds inputAudioTranscription/sessionResumption after it
-      // authenticates with this token.
+      // Keep this request aligned with Google's current REST example for
+      // ephemeral Live API tokens. In particular, don't send extra fields
+      // that aren't required for token provisioning.
       const tokenResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
         method: 'POST',
         headers: {
@@ -27,11 +23,11 @@ function registerLiveTokenRoute(app) {
         },
         body: JSON.stringify({
           uses: 1,
-          expireTime,
-          newSessionExpireTime,
+          expireTime: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
           liveConnectConstraints: {
             model: 'models/gemini-3.1-flash-live-preview',
             config: {
+              sessionResumption: {},
               responseModalities: ['AUDIO'],
             },
           },
@@ -43,22 +39,25 @@ function registerLiveTokenRoute(app) {
       try {
         payload = rawBody ? JSON.parse(rawBody) : null;
       } catch (_) {
-        console.error('Gemini Live token response was not valid JSON:', {
+        console.error('Gemini Live token response was not JSON:', {
           status: tokenResponse.status,
-          body: rawBody.slice(0, 500),
+          body: rawBody.slice(0, 1000),
         });
         return res.status(502).json({
-          error: `Gemini token service returned an invalid response (HTTP ${tokenResponse.status}).`,
+          error: `Gemini token service returned a non-JSON response (HTTP ${tokenResponse.status}).`,
         });
       }
 
       if (!tokenResponse.ok || !payload?.name) {
+        const providerMessage = payload?.error?.message || payload?.message;
         console.error('Gemini Live token provisioning failed:', {
           status: tokenResponse.status,
           payload,
         });
         return res.status(502).json({
-          error: payload?.error?.message || `Gemini Live token provisioning failed (HTTP ${tokenResponse.status}).`,
+          error: providerMessage
+            ? `Gemini token provisioning failed: ${providerMessage}`
+            : `Gemini Live token provisioning failed (HTTP ${tokenResponse.status}).`,
         });
       }
 
