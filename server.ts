@@ -44,11 +44,7 @@ async function paystackRequest(path: string, options: { method?: string; body?: 
   return json;
 }
 
-// --- Firebase Admin (server-side Firestore writes) ---
-// Used only to record confirmed Paystack payment status. The Admin SDK
-// bypasses Firestore security rules by design, which is exactly why the
-// client is *not* allowed to write to users/{uid}/meta/billing directly
-// (see BACKEND_SETUP.md) — only this trusted server process can.
+// --- Firebase Admin (server-side Firestore writes) ----------------------
 function getAdminDb() {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) return null;
@@ -65,15 +61,6 @@ function getAdminDb() {
 }
 
 // --- Paystack webhook -----------------------------------------------------
-// IMPORTANT: this route (and its express.raw() body parser) must be
-// registered BEFORE the global express.json() middleware below, or
-// Paystack's signature verification will fail because the body will
-// already have been parsed/re-serialized as JSON.
-//
-// Paystack signs the raw request body with HMAC-SHA512 using your secret
-// key and sends the hex digest in the `x-paystack-signature` header —
-// there's no separate webhook secret to configure, unlike some other
-// providers.
 app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
   const secretKey = getPaystackSecretKey();
   if (!secretKey) {
@@ -104,11 +91,6 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), as
     const data = event.data || {};
 
     switch (event.event) {
-      // Fired on the very first successful charge — this is the only event
-      // guaranteed to carry the metadata we sent at checkout (our uid), so
-      // we use it to record a Paystack customer_code -> uid mapping that
-      // later subscription events (which don't carry our metadata) can look
-      // up by.
       case 'charge.success': {
         const uid = data.metadata?.uid;
         const customerCode = data.customer?.customer_code;
@@ -161,11 +143,12 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), as
   }
 });
 
-app.use(express.json({ limit: '25mb' }));
+// Meeting recordings are sent as base64 WebM. Keep enough headroom for a
+// normal 20-minute browser recording while still rejecting unreasonable
+// request sizes.
+app.use(express.json({ limit: '50mb' }));
 
-// Initialize a Paystack transaction for the Pro subscription — returns a
-// hosted checkout URL to redirect the user to (Paystack's equivalent of a
-// Stripe Checkout session).
+// Initialize a Paystack transaction for the Pro subscription.
 app.post('/api/billing/create-checkout-session', async (req, res) => {
   if (!getPaystackSecretKey()) {
     return res.status(200).json({ configured: false });
@@ -201,9 +184,7 @@ app.post('/api/billing/create-checkout-session', async (req, res) => {
   }
 });
 
-// Generate a Paystack-hosted "manage subscription" link so an existing Pro
-// user can update their card or cancel — Paystack's equivalent of a Stripe
-// Billing Portal session.
+// Generate a Paystack-hosted manage-subscription link.
 app.post('/api/billing/create-portal-session', async (req, res) => {
   if (!getPaystackSecretKey()) {
     return res.status(200).json({ configured: false });
@@ -261,20 +242,23 @@ app.get('/api/health', (req, res) => {
 });
 
 // AI Note Processing endpoint
+// Supports typed transcripts, document images, and browser-recorded audio.
+// Meeting Mode sends a WebM recording here so Gemini can transcribe and
+// structure the meeting in the same request.
 app.post('/api/generate-note', async (req, res) => {
   try {
-    const { transcript, titleHint, categoryHint, imageBase64 } = req.body;
+    const { transcript, titleHint, categoryHint, imageBase64, audioBase64 } = req.body;
 
-    if (!transcript && !imageBase64) {
-      return res.status(400).json({ error: 'Either transcript text or an image is required.' });
+    if (!transcript && !imageBase64 && !audioBase64) {
+      return res.status(400).json({ error: 'Transcript text, an image, or an audio recording is required.' });
     }
 
     const ai = getGeminiClient();
-    
-    // Fallback if API key is not present or AI fails
+
+    // Fallback if API key is not present or AI fails.
     if (!ai) {
       const fallbackTitle = titleHint || (transcript ? transcript.slice(0, 30) + '...' : 'Quick Voice Note');
-      const textSample = transcript || 'Scanned document snippet';
+      const textSample = transcript || (audioBase64 ? 'Meeting audio recording' : 'Scanned document snippet');
       return res.json({
         title: fallbackTitle,
         summary: `Summary of recorded note: ${textSample.slice(0, 120)}...`,
@@ -287,33 +271,51 @@ app.post('/api/generate-note', async (req, res) => {
     }
 
     const systemInstruction = `You are Voxnote, an expert AI note-taking assistant.
-Analyze the user's audio transcript or document text/image and organize it into a structured, highly useful note.
+Analyze the user's audio recording, audio transcript, document text, or document image and organize it into a structured, highly useful note.
+If an audio recording is provided, first transcribe the spoken content accurately, then use that transcription as the source for the note.
+For meetings, pay particular attention to decisions, speakers' main points, follow-ups, deadlines, owners, and action items.
+Do not invent facts, names, decisions, deadlines, or action items that are not supported by the recording or supplied text.
 Extract:
 - title: A short, concise title (max 6 words).
 - summary: A crisp 2-3 sentence overview.
-- formattedContent: Rich markdown formatted body with bullet points, headers, and organized sections.
+- formattedContent: Rich markdown formatted body with bullet points, headers, and organized sections. For meetings, prefer sections such as Overview, Key Discussion Points, Decisions, and Action Items when supported by the source.
 - tags: Array of 1-3 relevant tags (e.g. "Meeting", "Study", "Idea", "Project", "Finance", "Personal", "Research").
 - keyTakeaways: Array of 2-4 key takeaway strings.
-- actionItems: Array of actionable task items extracted from the content.
+- actionItems: Array of actionable task items extracted from the content. Return an empty array if none are supported by the source.
 - sentiment: One word description like "Urgent", "Strategic", "Informational", "Brainstorm".
 `;
 
-    let parts: any[] = [];
-    if (imageBase64) {
+    const parts: any[] = [];
+
+    if (audioBase64) {
+      const base64Data = audioBase64.includes(',') ? audioBase64.split(',')[1] : audioBase64;
+      const mimeMatch = audioBase64.match(/^data:([^;,]+)[;,]/i);
+      const mimeType = mimeMatch?.[1] || 'audio/webm';
+
+      parts.push({
+        inlineData: {
+          mimeType,
+          data: base64Data,
+        },
+      });
+      parts.push({
+        text: `Transcribe this browser-recorded meeting audio and create the structured Voxnote note described in the system instructions. Meeting title hint: ${titleHint || 'Meeting Notes'}. Category: ${categoryHint || 'Meeting'}.`,
+      });
+    } else if (imageBase64) {
       const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
       const mimeType = imageBase64.includes('data:image/png') ? 'image/png' : 'image/jpeg';
       parts.push({
         inlineData: {
           mimeType,
-          data: base64Data
-        }
+          data: base64Data,
+        },
       });
       parts.push({
-        text: `Transcribe and summarize this document or handwritten page into a structured note. User context: ${transcript || 'No extra context'}`
+        text: `Transcribe and summarize this document or handwritten page into a structured note. User context: ${transcript || 'No extra context'}`,
       });
     } else {
       parts.push({
-        text: `Here is the spoken or typed audio transcript:\n\n"${transcript}"\n\nPlease structure this into a clean note.`
+        text: `Here is the spoken or typed audio transcript:\n\n"${transcript}"\n\nPlease structure this into a clean note.`,
       });
     }
 
@@ -331,21 +333,21 @@ Extract:
             formattedContent: { type: Type.STRING },
             tags: {
               type: Type.ARRAY,
-              items: { type: Type.STRING }
+              items: { type: Type.STRING },
             },
             keyTakeaways: {
               type: Type.ARRAY,
-              items: { type: Type.STRING }
+              items: { type: Type.STRING },
             },
             actionItems: {
               type: Type.ARRAY,
-              items: { type: Type.STRING }
+              items: { type: Type.STRING },
             },
-            sentiment: { type: Type.STRING }
+            sentiment: { type: Type.STRING },
           },
-          required: ['title', 'summary', 'formattedContent', 'tags', 'keyTakeaways', 'actionItems']
-        }
-      }
+          required: ['title', 'summary', 'formattedContent', 'tags', 'keyTakeaways', 'actionItems'],
+        },
+      },
     });
 
     const responseText = response.text || '{}';
@@ -356,7 +358,7 @@ Extract:
     console.error('Error generating note:', error);
     res.status(500).json({
       error: 'Failed to process note with AI',
-      details: error.message
+      details: error.message,
     });
   }
 });
@@ -372,8 +374,8 @@ app.post('/api/ai-search', async (req, res) => {
     const ai = getGeminiClient();
     if (!ai) {
       return res.json({
-        answer: "AI search fallback: Configure GEMINI_API_KEY in secrets to get AI synthesized answers.",
-        matchingNoteIds: notes ? notes.slice(0, 3).map((n: any) => n.id) : []
+        answer: 'AI search fallback: Configure GEMINI_API_KEY in secrets to get AI synthesized answers.',
+        matchingNoteIds: notes ? notes.slice(0, 3).map((n: any) => n.id) : [],
       });
     }
 
@@ -381,13 +383,7 @@ app.post('/api/ai-search', async (req, res) => {
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
-      contents: `You are an AI assistant searching through user notes.
-Query: "${query}"
-
-User Notes Collection:
-${notesSummary}
-
-Provide a direct, helpful synthesis answer to the user's question based on their notes, and return the IDs of the relevant notes.`,
+      contents: `You are an AI assistant searching through user notes.\nQuery: "${query}"\n\nUser Notes Collection:\n${notesSummary}\n\nProvide a direct, helpful synthesis answer to the user's question based on their notes, and return the IDs of the relevant notes.`,
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -396,12 +392,12 @@ Provide a direct, helpful synthesis answer to the user's question based on their
             answer: { type: Type.STRING },
             matchingNoteIds: {
               type: Type.ARRAY,
-              items: { type: Type.STRING }
-            }
+              items: { type: Type.STRING },
+            },
           },
-          required: ['answer', 'matchingNoteIds']
-        }
-      }
+          required: ['answer', 'matchingNoteIds'],
+        },
+      },
     });
 
     const parsed = JSON.parse(response.text || '{}');
@@ -427,7 +423,7 @@ async function startServer() {
     });
   }
 
- app.listen(PORT, '0.0.0.0', () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
   });
 }
