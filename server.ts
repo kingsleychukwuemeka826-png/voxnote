@@ -13,11 +13,6 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- Paystack (billing) --------------------------------------------------
-// Paystack's API is plain REST with a Bearer secret key, so no SDK is
-// needed — just fetch. Returns null (rather than throwing) when
-// unconfigured, so every route that uses it can fall back to "demo mode"
-// instead of crashing the server.
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 
 function getPaystackSecretKey(): string | null {
@@ -44,7 +39,6 @@ async function paystackRequest(path: string, options: { method?: string; body?: 
   return json;
 }
 
-// --- Firebase Admin (server-side Firestore writes) ----------------------
 function getAdminDb() {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) return null;
@@ -60,12 +54,9 @@ function getAdminDb() {
   }
 }
 
-// --- Paystack webhook -----------------------------------------------------
 app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
   const secretKey = getPaystackSecretKey();
-  if (!secretKey) {
-    return res.status(501).json({ error: 'Paystack is not configured on this server.' });
-  }
+  if (!secretKey) return res.status(501).json({ error: 'Paystack is not configured on this server.' });
 
   const signature = req.headers['x-paystack-signature'] as string | undefined;
   const expectedHash = crypto.createHmac('sha512', secretKey).update(req.body).digest('hex');
@@ -77,15 +68,12 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), as
   let event: any;
   try {
     event = JSON.parse(req.body.toString('utf8'));
-  } catch (err) {
+  } catch {
     return res.status(400).send('Invalid payload');
   }
 
   const db = getAdminDb();
-  if (!db) {
-    console.error('Paystack webhook received but Firebase Admin is not configured — cannot record billing status.');
-    return res.status(200).json({ received: true, warning: 'FIREBASE_SERVICE_ACCOUNT not set' });
-  }
+  if (!db) return res.status(200).json({ received: true, warning: 'FIREBASE_SERVICE_ACCOUNT not set' });
 
   try {
     const data = event.data || {};
@@ -96,43 +84,33 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), as
         const customerCode = data.customer?.customer_code;
         if (uid && customerCode) {
           await db.doc(`paystackCustomers/${customerCode}`).set({ uid });
-          await db.doc(`users/${uid}/meta/billing`).set(
-            {
-              isProPlan: true,
-              paystackCustomerCode: customerCode,
-              plan: data.metadata?.plan || 'unknown',
-              updatedAt: new Date().toISOString(),
-            },
-            { merge: true }
-          );
+          await db.doc(`users/${uid}/meta/billing`).set({
+            isProPlan: true,
+            paystackCustomerCode: customerCode,
+            plan: data.metadata?.plan || 'unknown',
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
         }
         break;
       }
-
       case 'subscription.create':
       case 'subscription.disable':
       case 'subscription.not_renew': {
         const customerCode = data.customer?.customer_code;
         if (!customerCode) break;
-
         const mappingDoc = await db.doc(`paystackCustomers/${customerCode}`).get();
         const uid = mappingDoc.data()?.uid || data.metadata?.uid;
         if (!uid) break;
-
         const isActive = event.event === 'subscription.create' && data.status === 'active';
-        await db.doc(`users/${uid}/meta/billing`).set(
-          {
-            isProPlan: isActive,
-            paystackCustomerCode: customerCode,
-            paystackSubscriptionCode: data.subscription_code,
-            status: data.status,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
+        await db.doc(`users/${uid}/meta/billing`).set({
+          isProPlan: isActive,
+          paystackCustomerCode: customerCode,
+          paystackSubscriptionCode: data.subscription_code,
+          status: data.status,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
         break;
       }
-
       default:
         break;
     }
@@ -143,16 +121,13 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), as
   }
 });
 
-// Meeting recordings are sent as base64 audio. Keep enough headroom for
-// the MVP's 20-minute speech-optimized WAV recordings while still rejecting
-// unreasonable request sizes.
 app.use(express.json({ limit: '60mb' }));
 
 // Initialize a Paystack transaction for the Pro subscription.
+// Paystack requires an amount in the smallest currency unit when initializing
+// a transaction, even when a recurring plan code is supplied.
 app.post('/api/billing/create-checkout-session', async (req, res) => {
-  if (!getPaystackSecretKey()) {
-    return res.status(200).json({ configured: false });
-  }
+  if (!getPaystackSecretKey()) return res.status(200).json({ configured: false });
 
   try {
     const { uid, email, plan } = req.body as { uid: string; email?: string; plan: 'monthly' | 'annual' };
@@ -161,16 +136,17 @@ app.post('/api/billing/create-checkout-session', async (req, res) => {
     }
 
     const planCode = plan === 'annual' ? process.env.PAYSTACK_PLAN_ANNUAL : process.env.PAYSTACK_PLAN_MONTHLY;
-    if (!planCode) {
-      return res.status(500).json({ error: `Missing PAYSTACK_PLAN_${plan.toUpperCase()} env var.` });
-    }
+    if (!planCode) return res.status(500).json({ error: `Missing PAYSTACK_PLAN_${plan.toUpperCase()} env var.` });
 
+    const amount = plan === 'annual' ? 9500000 : 1100000;
     const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
 
     const result = await paystackRequest('/transaction/initialize', {
       method: 'POST',
       body: {
         email,
+        amount,
+        currency: 'NGN',
         plan: planCode,
         callback_url: `${appUrl}?billing=success`,
         metadata: { uid, plan },
@@ -184,24 +160,15 @@ app.post('/api/billing/create-checkout-session', async (req, res) => {
   }
 });
 
-// Generate a Paystack-hosted manage-subscription link. If the webhook has
-// not stored the subscription code yet, recover it from the customer's
-// Paystack subscriptions before generating the management link.
 app.post('/api/billing/create-portal-session', async (req, res) => {
-  if (!getPaystackSecretKey()) {
-    return res.status(200).json({ configured: false });
-  }
+  if (!getPaystackSecretKey()) return res.status(200).json({ configured: false });
 
   try {
     const { uid } = req.body as { uid: string };
-    if (!uid) {
-      return res.status(400).json({ error: 'uid is required.' });
-    }
+    if (!uid) return res.status(400).json({ error: 'uid is required.' });
 
     const db = getAdminDb();
-    if (!db) {
-      return res.status(500).json({ error: 'Firebase Admin is not configured — cannot look up billing record.' });
-    }
+    if (!db) return res.status(500).json({ error: 'Firebase Admin is not configured — cannot look up billing record.' });
 
     const billingRef = db.doc(`users/${uid}/meta/billing`);
     const billingDoc = await billingRef.get();
@@ -210,255 +177,88 @@ app.post('/api/billing/create-portal-session', async (req, res) => {
     let subscriptionCode = billing.paystackSubscriptionCode;
     const customerCode = billing.paystackCustomerCode;
 
-    // Webhooks can arrive out of order. If charge.success created the
-    // billing record but subscription.create has not stored its code yet,
-    // recover the customer's active subscription directly from Paystack.
     if (!subscriptionCode && customerCode) {
-      console.log(`Recovering Paystack subscription for ${uid} from customer ${customerCode}...`);
-
-      const customerResult = await paystackRequest(`/customer/${encodeURIComponent(customerCode)}`);
-      const subscriptions = customerResult.data?.subscriptions || [];
-
-      const activeSubscription = subscriptions.find(
-        (subscription: any) =>
-          subscription.status === 'active' || subscription.status === 'non-renewing'
-      );
-
-      subscriptionCode = activeSubscription?.subscription_code;
-
+      const subscriptions = await paystackRequest(`/customer/${customerCode}/subscriptions`);
+      const active = subscriptions.data?.find((s: any) => s.status === 'active');
+      subscriptionCode = active?.subscription_code;
       if (subscriptionCode) {
-        await billingRef.set(
-          {
-            paystackSubscriptionCode: subscriptionCode,
-            status: activeSubscription.status,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-        console.log(`Recovered Paystack subscription ${subscriptionCode} for ${uid}.`);
+        await billingRef.set({ paystackSubscriptionCode: subscriptionCode, status: active.status }, { merge: true });
       }
     }
 
     if (!subscriptionCode) {
-      return res.status(404).json({
-        error: 'We could not find an active Paystack subscription for this account yet. If you just paid, please wait a moment and try again.',
-      });
+      return res.status(404).json({ error: 'No active Paystack subscription could be found for this account yet.' });
     }
 
-    const result = await paystackRequest(
-      `/subscription/${encodeURIComponent(subscriptionCode)}/manage/link`
-    );
-
-    if (!result.data?.link) {
-      throw new Error('Paystack did not return a billing management link.');
-    }
-
+    const result = await paystackRequest(`/subscription/${subscriptionCode}/manage/link`);
     res.json({ configured: true, url: result.data.link });
   } catch (err: any) {
     console.error('Error creating Paystack manage link:', err);
-    res.status(500).json({
-      error: err?.message || 'Unable to open billing management right now. Please try again.',
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Helper to initialize Gemini Client securely
 function getGeminiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return null;
-  }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
+  if (!apiKey) return null;
+  return new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
 }
 
-// Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    hasApiKey: Boolean(process.env.GEMINI_API_KEY),
-    hasPaystack: Boolean(process.env.PAYSTACK_SECRET_KEY),
-    hasFirebaseAdmin: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT),
-  });
+  res.json({ status: 'ok', hasApiKey: Boolean(process.env.GEMINI_API_KEY), hasPaystack: Boolean(process.env.PAYSTACK_SECRET_KEY), hasFirebaseAdmin: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT) });
 });
 
-// AI Note Processing endpoint
-// Supports typed transcripts, document images, and browser-recorded audio.
-// Meeting Mode sends a speech-optimized WAV recording here so Gemini can
-// transcribe and structure the meeting in the same request.
 app.post('/api/generate-note', async (req, res) => {
   try {
-    const { transcript, titleHint, categoryHint, imageBase64, audioBase64 } = req.body;
-
-    if (!transcript && !imageBase64 && !audioBase64) {
-      return res.status(400).json({ error: 'Transcript text, an image, or an audio recording is required.' });
-    }
-
+    const { transcript, titleHint, categoryHint, imageBase64 } = req.body;
+    if (!transcript && !imageBase64) return res.status(400).json({ error: 'Either transcript text or an image is required.' });
     const ai = getGeminiClient();
-    
-    // Fallback if API key is not present or AI fails
     if (!ai) {
       const fallbackTitle = titleHint || (transcript ? transcript.slice(0, 30) + '...' : 'Quick Voice Note');
-      const textSample = transcript || (audioBase64 ? 'Meeting audio recording' : 'Scanned document snippet');
-      return res.json({
-        title: fallbackTitle,
-        summary: `Summary of recorded note: ${textSample.slice(0, 120)}...`,
-        formattedContent: `## Notes\n\n${textSample}\n\n*Generated locally (Gemini API Key pending)*`,
-        tags: [categoryHint || 'Voice Note', 'Quick Note'],
-        keyTakeaways: [textSample.slice(0, 80)],
-        actionItems: ['Review and organize note content'],
-        sentiment: 'Informational',
-      });
+      const textSample = transcript || 'Scanned document snippet';
+      return res.json({ title: fallbackTitle, summary: `Summary of recorded note: ${textSample.slice(0, 120)}...`, formattedContent: `## Notes\n\n${textSample}\n\n*Generated locally (Gemini API Key pending)*`, tags: [categoryHint || 'Voice Note', 'Quick Note'], keyTakeaways: [textSample.slice(0, 80)], actionItems: ['Review and organize note content'], sentiment: 'Informational' });
     }
-
-    const systemInstruction = `You are Voxnote, an expert AI note-taking assistant.
-Analyze the user's audio recording, audio transcript, document text, or document image and organize it into a structured, highly useful note.
-If an audio recording is provided, first transcribe the spoken content accurately, then use that transcription as the source for the note.
-For meetings, pay particular attention to decisions, speakers' main points, follow-ups, deadlines, owners, and action items.
-Do not invent facts, names, decisions, deadlines, or action items that are not supported by the recording or supplied text.
-Extract:
-- title: A short, concise title (max 6 words).
-- summary: A crisp 2-3 sentence overview.
-- formattedContent: Rich markdown formatted body with bullet points, headers, and organized sections. For meetings, prefer sections such as Overview, Key Discussion Points, Decisions, and Action Items when supported by the source.
-- tags: Array of 1-3 relevant tags (e.g. "Meeting", "Study", "Idea", "Project", "Finance", "Personal", "Research").
-- keyTakeaways: Array of 2-4 key takeaway strings.
-- actionItems: Array of actionable task items extracted from the content. Return an empty array if none are supported by the source.
-- sentiment: One word description like "Urgent", "Strategic", "Informational", "Brainstorm".
-`;
-
-    const parts: any[] = [];
-    if (audioBase64) {
-      const base64Data = audioBase64.includes(',') ? audioBase64.split(',')[1] : audioBase64;
-      const mimeMatch = audioBase64.match(/^data:([^;,]+)[;,]/i);
-      const mimeType = mimeMatch?.[1] || 'audio/wav';
-
-      if (mimeType !== 'audio/wav' && mimeType !== 'audio/mp3' && mimeType !== 'audio/aac' && mimeType !== 'audio/ogg' && mimeType !== 'audio/flac' && mimeType !== 'audio/aiff') {
-        throw new Error(`Unsupported meeting audio format: ${mimeType}. Voxnote expects a speech-compatible WAV/MP3/AAC/OGG/FLAC/AIFF recording.`);
-      }
-
-      parts.push({
-        inlineData: {
-          mimeType,
-          data: base64Data,
-        },
-      });
-      parts.push({
-        text: `Transcribe this browser-recorded meeting audio and create the structured Voxnote note described in the system instructions. Meeting title hint: ${titleHint || 'Meeting Notes'}. Category: ${categoryHint || 'Meeting'}.`,
-      });
-    } else if (imageBase64) {
+    const systemInstruction = `You are Voxnote, an expert AI note-taking assistant.\nAnalyze the user's audio transcript or document text/image and organize it into a structured, highly useful note.\nExtract:\n- title: A short, concise title (max 6 words).\n- summary: A crisp 2-3 sentence overview.\n- formattedContent: Rich markdown formatted body with bullet points, headers, and organized sections.\n- tags: Array of 1-3 relevant tags (e.g. "Meeting", "Study", "Idea", "Project", "Finance", "Personal", "Research").\n- keyTakeaways: Array of 2-4 key takeaway strings.\n- actionItems: Array of actionable task items extracted from the content.\n- sentiment: One word description like "Urgent", "Strategic", "Informational", "Brainstorm".`;
+    let parts: any[] = [];
+    if (imageBase64) {
       const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
       const mimeType = imageBase64.includes('data:image/png') ? 'image/png' : 'image/jpeg';
-      parts.push({
-        inlineData: {
-          mimeType,
-          data: base64Data
-        }
-      });
-      parts.push({
-        text: `Transcribe and summarize this document or handwritten page into a structured note. User context: ${transcript || 'No extra context'}`
-      });
+      parts.push({ inlineData: { mimeType, data: base64Data } });
+      parts.push({ text: `Transcribe and summarize this document or handwritten page into a structured note. User context: ${transcript || 'No extra context'}` });
     } else {
-      parts.push({
-        text: `Here is the spoken or typed audio transcript:\n\n"${transcript}"\n\nPlease structure this into a clean note.`
-      });
+      parts.push({ text: `Here is the spoken or typed audio transcript:\n\n"${transcript}"\n\nPlease structure this into a clean note.` });
     }
-
     const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents: { parts },
-      config: {
-        systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            summary: { type: Type.STRING },
-            formattedContent: { type: Type.STRING },
-            tags: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            },
-            keyTakeaways: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            },
-            actionItems: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            },
-            sentiment: { type: Type.STRING }
-          },
-          required: ['title', 'summary', 'formattedContent', 'tags', 'keyTakeaways', 'actionItems']
+      model: 'gemini-3.6-flash', contents: { parts }, config: {
+        systemInstruction, responseMimeType: 'application/json', responseSchema: {
+          type: Type.OBJECT, properties: {
+            title: { type: Type.STRING }, summary: { type: Type.STRING }, formattedContent: { type: Type.STRING },
+            tags: { type: Type.ARRAY, items: { type: Type.STRING } }, keyTakeaways: { type: Type.ARRAY, items: { type: Type.STRING } },
+            actionItems: { type: Type.ARRAY, items: { type: Type.STRING } }, sentiment: { type: Type.STRING }
+          }, required: ['title', 'summary', 'formattedContent', 'tags', 'keyTakeaways', 'actionItems']
         }
       }
     });
-
-    const responseText = response.text || '{}';
-    const parsedNote = JSON.parse(responseText);
-
-    res.json(parsedNote);
+    res.json(JSON.parse(response.text || '{}'));
   } catch (error: any) {
     console.error('Error generating note:', error);
-    const message = error?.message || 'Unknown Gemini processing error.';
-    res.status(500).json({
-      error: 'Failed to process note with AI',
-      details: message
-    });
+    res.status(500).json({ error: 'Failed to process note with AI', details: error.message });
   }
 });
 
-// AI Smart Search / Ask Notes Endpoint
 app.post('/api/ai-search', async (req, res) => {
   try {
     const { query, notes } = req.body;
-    if (!query) {
-      return res.status(400).json({ error: 'Query is required' });
-    }
-
+    if (!query) return res.status(400).json({ error: 'Query is required' });
     const ai = getGeminiClient();
-    if (!ai) {
-      return res.json({
-        answer: "AI search fallback: Configure GEMINI_API_KEY in secrets to get AI synthesized answers.",
-        matchingNoteIds: notes ? notes.slice(0, 3).map((n: any) => n.id) : []
-      });
-    }
-
+    if (!ai) return res.json({ answer: 'AI search fallback: Configure GEMINI_API_KEY in secrets to get AI synthesized answers.', matchingNoteIds: notes ? notes.slice(0, 3).map((n: any) => n.id) : [] });
     const notesSummary = notes?.map((n: any) => `[ID: ${n.id}] Title: ${n.title}\nTags: ${n.tags.join(', ')}\nContent: ${n.content}\nSummary: ${n.summary}`).join('\n---\n') || '';
-
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
-      contents: `You are an AI assistant searching through user notes.
-Query: "${query}"
-
-User Notes Collection:
-${notesSummary}
-
-Provide a direct, helpful synthesis answer to the user's question based on their notes, and return the IDs of the relevant notes.`,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            answer: { type: Type.STRING },
-            matchingNoteIds: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            }
-          },
-          required: ['answer', 'matchingNoteIds']
-        }
-      }
+      contents: `You are an AI assistant searching through user notes.\nQuery: "${query}"\n\nUser Notes Collection:\n${notesSummary}\n\nProvide a direct, helpful synthesis answer to the user's question based on their notes, and return the IDs of the relevant notes.`,
+      config: { responseMimeType: 'application/json', responseSchema: { type: Type.OBJECT, properties: { answer: { type: Type.STRING }, matchingNoteIds: { type: Type.ARRAY, items: { type: Type.STRING } } }, required: ['answer', 'matchingNoteIds'] } }
     });
-
-    const parsed = JSON.parse(response.text || '{}');
-    res.json(parsed);
+    res.json(JSON.parse(response.text || '{}'));
   } catch (error: any) {
     console.error('Error in AI search:', error);
     res.status(500).json({ error: error.message });
@@ -467,22 +267,14 @@ Provide a direct, helpful synthesis answer to the user's question based on their
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
-
- app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+  app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 }
 
 startServer();
