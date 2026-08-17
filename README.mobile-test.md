@@ -1,1 +1,0 @@
-Temporary test marker for mobile transcription hardening.
