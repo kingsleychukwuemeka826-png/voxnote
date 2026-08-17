@@ -1,6 +1,4 @@
 // Thin client for the Paystack billing endpoints in server.ts.
-// Both calls gracefully report { configured: false } if Paystack hasn't
-// been set up on the server yet, so callers can fall back to a simulated flow.
 
 export interface CheckoutResult {
   configured: boolean;
@@ -26,12 +24,12 @@ export async function createCheckoutSession(
   }
 }
 
-export async function createPortalSession(uid: string): Promise<CheckoutResult> {
+export async function createPortalSession(uid: string, email?: string): Promise<CheckoutResult> {
   try {
     const res = await fetch('/api/billing/create-portal-session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid }),
+      body: JSON.stringify({ uid, email }),
     });
     return await res.json();
   } catch (e) {
