@@ -61,12 +61,14 @@ export interface BillingRecord {
 }
 
 // Read-only from the client's perspective — see the note at the top of this
-// file. Fires with `null` if there's no billing doc yet (i.e. never subscribed).
+// file. A missing billing doc means the signed-in account has never had a
+// confirmed Paystack subscription, so explicitly report the Free tier instead
+// of returning null and allowing stale local settings to leak across accounts.
 export function subscribeToBillingStatus(uid: string, onChange: (billing: BillingRecord | null) => void): () => void {
   if (!isFirebaseConfigured || !db) return () => {};
   return onSnapshot(
     doc(db, 'users', uid, 'meta', 'billing'),
-    (snap) => onChange(snap.exists() ? (snap.data() as BillingRecord) : null),
+    (snap) => onChange(snap.exists() ? (snap.data() as BillingRecord) : { isProPlan: false }),
     (err) => console.error('[Voxnote] Billing status sync error:', err)
   );
 }
