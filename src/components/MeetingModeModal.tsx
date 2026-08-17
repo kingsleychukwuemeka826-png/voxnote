@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AudioLines, CircleStop, MonitorUp, Pause, Play, ShieldCheck, Smartphone, X } from 'lucide-react';
 import { Note } from '../types';
+import { subscribeToAuthChanges } from '../lib/authService';
+import { subscribeToBillingStatus } from '../lib/cloudSync';
+import { isFirebaseConfigured } from '../lib/firebase';
 
 interface MeetingModeModalProps { isOpen: boolean; onClose: () => void; onSaveNote: (note: Note) => void; }
 type State = 'idle' | 'requesting' | 'recording' | 'paused' | 'processing' | 'done' | 'error';
@@ -21,6 +24,8 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen, onCl
   const [error, setError] = useState('');
   const [source, setSource] = useState('Meeting tab audio + microphone');
   const [isMobile, setIsMobile] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileIsPro, setMobileIsPro] = useState(false);
 
   const displayRef = useRef<MediaStream | null>(null);
   const micRef = useRef<MediaStream | null>(null);
@@ -53,6 +58,14 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen, onCl
     updateViewport();
     window.addEventListener('resize', updateViewport);
     return () => window.removeEventListener('resize', updateViewport);
+  }, []);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured) return;
+    return subscribeToAuthChanges(user => {
+      if (!user) { setMobileIsPro(false); return; }
+      return subscribeToBillingStatus(user.id, billing => setMobileIsPro(Boolean(billing?.isProPlan)));
+    });
   }, []);
 
   useEffect(() => () => cleanup(), []);
@@ -223,16 +236,27 @@ export const MeetingModeModal: React.FC<MeetingModeModalProps> = ({ isOpen, onCl
     }
   };
 
-  if (!isOpen) return null;
+  const closeModal = () => {
+    if (state === 'recording' || state === 'paused' || state === 'processing') return;
+    if (mobileOpen) setMobileOpen(false); else onClose();
+  };
+
+  const visible = isOpen || mobileOpen;
   const time = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
+
+  if (!visible) {
+    if (!isMobile || !mobileIsPro) return null;
+    return <button onClick={() => { setError(''); setState('idle'); setMobileOpen(true); }} className="fixed right-4 bottom-[92px] z-50 flex items-center gap-2 rounded-2xl bg-indigo-600 px-4 py-3 text-white text-xs font-extrabold shadow-xl shadow-indigo-200 border border-indigo-500 active:scale-95 transition" aria-label="Open Meeting Mode"><Smartphone className="w-4 h-4" />Meeting Mode</button>;
+  }
+
   return <div className="fixed inset-0 z-[100] bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4" role="dialog" aria-modal="true">
     <div className="w-full max-w-xl bg-white rounded-[30px] border border-slate-200 shadow-2xl overflow-hidden">
-      <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between"><div className="flex items-center gap-3"><div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">{isMobile ? <Smartphone className="w-5 h-5" /> : <AudioLines className="w-5 h-5" />}</div><div><h2 className="font-extrabold text-slate-900">Meeting Mode</h2><p className="text-xs text-slate-400 mt-1">{isMobile ? 'Pro mobile meeting recording' : 'Pro desktop meeting transcription'}</p></div></div><button onClick={onClose} disabled={state === 'recording' || state === 'paused' || state === 'processing'} className="w-9 h-9 rounded-xl hover:bg-slate-100 flex items-center justify-center disabled:opacity-30"><X className="w-4 h-4" /></button></div>
+      <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between"><div className="flex items-center gap-3"><div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">{isMobile ? <Smartphone className="w-5 h-5" /> : <AudioLines className="w-5 h-5" />}</div><div><h2 className="font-extrabold text-slate-900">Meeting Mode</h2><p className="text-xs text-slate-400 mt-1">{isMobile ? 'Pro mobile meeting recording' : 'Pro desktop meeting transcription'}</p></div></div><button onClick={closeModal} disabled={state === 'recording' || state === 'paused' || state === 'processing'} className="w-9 h-9 rounded-xl hover:bg-slate-100 flex items-center justify-center disabled:opacity-30"><X className="w-4 h-4" /></button></div>
       <div className="p-6 space-y-5">
-        {state === 'idle' && <><div className="rounded-2xl bg-indigo-50 border border-indigo-100 p-4 flex gap-3"><ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" /><div><p className="text-sm font-bold text-indigo-950">{isMobile ? 'Record your meeting from your phone' : 'Capture a meeting from your desktop'}</p><p className="text-xs text-indigo-700/80 mt-1 leading-relaxed">{isMobile ? 'Voxnote will record the microphone audio around your phone, then upload it securely for AI transcription and structured meeting notes. For direct Google Meet, Zoom, or Teams tab audio capture, use desktop Meeting Mode.' : 'Select your Google Meet, Zoom, Teams or browser tab, enable Share audio, and allow microphone access. Voxnote records both meeting audio and your microphone, then transcribes the recording with AI.'}</p></div></div><input value={title} onChange={e => setTitle(e.target.value)} className="w-full px-4 py-3 rounded-2xl border border-slate-200 text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-100" placeholder="Meeting title" /><button onClick={startMeeting} className="w-full py-3.5 rounded-2xl bg-indigo-600 text-white font-extrabold text-sm flex items-center justify-center gap-2 hover:bg-indigo-500">{isMobile ? <Smartphone className="w-4 h-4" /> : <MonitorUp className="w-4 h-4" />}{isMobile ? 'Start Mobile Meeting' : 'Start Meeting Capture'}</button></>}
+        {state === 'idle' && <><div className="rounded-2xl bg-indigo-50 border border-indigo-100 p-4 flex gap-3"><ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" /><div><p className="text-sm font-bold text-indigo-950">{isMobile ? 'Record your meeting from your phone' : 'Capture a meeting from your desktop'}</p><p className="text-xs text-indigo-700/80 mt-1 leading-relaxed">{isMobile ? 'Voxnote will record the microphone audio around your phone, then upload it securely for AI transcription and structured meeting notes. For direct Google Meet, Zoom, or Teams tab audio capture, use desktop Meeting Mode.' : 'Select your Google Meet, Zoom, Teams or browser tab, enable Share audio, and allow microphone access. Voxnote records both meeting audio and your microphone, then transcribes the recording with AI.'}</p></div></div><input value={title} onChange={e => setTitle(e.target.value)} className="w-full px-4 py-3 rounded-2xl border border-slate-200 text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-100" placeholder="Meeting title" /><button onClick={() => void startMeeting()} className="w-full py-3.5 rounded-2xl bg-indigo-600 text-white font-extrabold text-sm flex items-center justify-center gap-2 hover:bg-indigo-500">{isMobile ? <Smartphone className="w-4 h-4" /> : <MonitorUp className="w-4 h-4" />}{isMobile ? 'Start Mobile Meeting' : 'Start Meeting Capture'}</button></>}
         {(state === 'requesting' || state === 'recording' || state === 'paused') && <div className="space-y-5"><div className="text-center"><div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-rose-50 text-rose-700 text-xs font-extrabold"><span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />{state === 'requesting' ? 'Waiting for permission' : state === 'paused' ? 'Meeting paused' : 'Meeting recording'}</div><div className="text-5xl font-black text-slate-900 tabular-nums mt-5">{time}</div><p className="text-xs text-slate-400 mt-2">{source}</p></div><div className="rounded-2xl bg-slate-50 border border-slate-100 p-4 text-xs leading-relaxed text-slate-600">{isMobile ? 'Keep Voxnote open and place the phone where it can clearly hear the meeting. The recording will be transcribed after you stop.' : 'Audio is being captured. The transcript will appear after you stop the meeting.'}</div>{state !== 'requesting' && <div className="flex justify-center gap-3"><button onClick={state === 'paused' ? resumeMeeting : pauseMeeting} className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-700 flex items-center justify-center">{state === 'paused' ? <Play className="w-5 h-5" /> : <Pause className="w-5 h-5" />}</button><button onClick={() => void stopMeeting()} className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center"><CircleStop className="w-5 h-5" /></button></div>}</div>}
         {state === 'processing' && <div className="py-10 text-center"><AudioLines className="w-10 h-10 mx-auto text-indigo-600 animate-pulse" /><h3 className="mt-4 font-extrabold text-slate-900">Transcribing your meeting…</h3><p className="text-xs text-slate-400 mt-2">Voxnote is converting the captured audio into a transcript and structured notes.</p></div>}
-        {state === 'done' && <div className="py-8 text-center"><h3 className="font-extrabold text-slate-900">Meeting note created</h3><p className="text-xs text-slate-400 mt-2">Your meeting has been transcribed and saved to All Notes.</p><button onClick={onClose} className="mt-6 px-5 py-3 rounded-2xl bg-indigo-600 text-white text-xs font-extrabold">Done</button></div>}
+        {state === 'done' && <div className="py-8 text-center"><h3 className="font-extrabold text-slate-900">Meeting note created</h3><p className="text-xs text-slate-400 mt-2">Your meeting has been transcribed and saved to All Notes.</p><button onClick={closeModal} className="mt-6 px-5 py-3 rounded-2xl bg-indigo-600 text-white text-xs font-extrabold">Done</button></div>}
         {state === 'error' && <div className="space-y-4"><div className="rounded-2xl bg-rose-50 border border-rose-100 p-4 text-sm text-rose-700">{error}</div><button onClick={() => { setError(''); setState('idle'); }} className="w-full py-3 rounded-2xl bg-slate-900 text-white text-xs font-extrabold">Try again</button></div>}
       </div>
     </div>
