@@ -31,6 +31,13 @@ declare global {
   }
 }
 
+const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onloadend = () => resolve(reader.result as string);
+  reader.onerror = reject;
+  reader.readAsDataURL(blob);
+});
+
 export async function startGeminiLiveTranscription(options: Options): Promise<Controller> {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   let stopped = false;
@@ -70,19 +77,18 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
     instance.maxAlternatives = 1;
 
     instance.onresult = (event: any) => {
-      let interim = '';
       let finalText = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i]?.[0]?.transcript || '';
         if (event.results[i]?.isFinal) finalText += text;
-        else interim += text;
       }
       const cleanFinal = finalText.trim();
       if (cleanFinal) {
         finalTranscript = `${finalTranscript}${finalTranscript ? ' ' : ''}${cleanFinal}`.trim();
+        // Only emit final recognition results. Interim results were previously
+        // appended to the transcript and caused repeated/echoed text.
         options.onText(cleanFinal);
       }
-      if (interim) options.onText(interim.trim());
     };
 
     instance.onerror = (event: any) => {
@@ -119,7 +125,7 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
   };
 
   if (!Ctor) {
-    options.onError?.('Live speech transcription is not supported in this browser. Please use the latest Chrome or Edge.');
+    options.onError?.('Live speech transcription is not supported in this browser. Voxnote will transcribe the saved recording after you finish.');
   }
 
   if (typeof window.MediaRecorder !== 'undefined') {
@@ -130,8 +136,8 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
         if (event.data?.size) chunks.push(event.data);
       };
       recorder.start(1000);
-    } catch (error) {
-      options.onError?.('Audio recording could not start. The transcript can still be saved.');
+    } catch {
+      options.onError?.('Audio recording could not start.');
     }
   }
 
@@ -202,6 +208,28 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
         recorder.onstop = () => resolve(chunks.length ? new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' }) : null);
         try { recorder.stop(); } catch { resolve(null); }
       });
+
+      // If browser speech recognition is unavailable or produced no final
+      // transcript, use the same server transcription pipeline as Meeting Mode.
+      // This makes mobile recordings useful even when live speech recognition
+      // is unsupported or unavailable on the device/browser.
+      if (blob && blob.size > 0 && !finalTranscript.trim()) {
+        try {
+          const audioDataUrl = await blobToDataUrl(blob);
+          const response = await fetch('/api/transcribe-meeting-audio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audioBase64: audioDataUrl, mimeType: blob.type || 'audio/webm' }),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.details ? `${data.error}: ${data.details}` : (data.error || 'Server transcription failed.'));
+          const serverTranscript = String(data.transcript || '').trim();
+          if (serverTranscript) options.onText(serverTranscript);
+        } catch (error: any) {
+          options.onError?.(error?.message || 'Saved recording could not be transcribed.');
+        }
+      }
+
       return blob;
     }
   };

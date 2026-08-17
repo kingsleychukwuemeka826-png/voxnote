@@ -77,7 +77,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
     try {
       const controller = await startGeminiLiveTranscription({
         onText: (text) => {
-          if (!isRecordingActiveRef.current || !text) return;
+          if (!text) return;
           const cleaned = text.trim();
           if (!cleaned) return;
 
@@ -166,18 +166,23 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
 
     if (controller) {
       try {
-        // Keep short WAV recordings for playback. Longer recordings are not
-        // embedded into the note to avoid oversized Firestore/local storage payloads.
         const audioBlob = await controller.stop();
         if (audioBlob && audioBlob.size <= 2_000_000) {
           audioDataUrl = await blobToDataUrl(audioBlob);
         }
-      } catch (error) {
+      } catch (error: any) {
         console.warn('Could not save recorded audio:', error);
+        setErrorMsg(error?.message || 'The recording could not be processed.');
       }
     }
 
-    const finalTranscript = transcriptRef.current.trim() || transcript.trim() || initialTranscript || 'Voice recording without spoken text.';
+    const finalTranscript = transcriptRef.current.trim() || transcript.trim() || initialTranscript || '';
+
+    if (!finalTranscript) {
+      setIsProcessingAI(false);
+      setErrorMsg((current) => current || 'No transcript was produced. Please try again.');
+      return;
+    }
 
     try {
       const res = await fetch('/api/generate-note', {
@@ -187,6 +192,8 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       });
 
       const data = await res.json();
+      if (!res.ok) throw new Error(data?.details ? `${data.error}: ${data.details}` : (data?.error || 'AI note generation failed.'));
+
       const newNote: Note = {
         id: `note-${Date.now()}`,
         title: data.title || initialTitle || 'Voice Note',
@@ -210,16 +217,16 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
       onSaveNote(newNote);
       setIsProcessingAI(false);
       onClose();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to summarize note with AI:', error);
       const fallbackNote: Note = {
         id: `note-${Date.now()}`,
-        title: initialTitle || (finalTranscript ? finalTranscript.slice(0, 30) : 'Voice Note'),
-        summary: finalTranscript || 'Recorded audio snippet.',
+        title: initialTitle || finalTranscript.slice(0, 30) || 'Voice Note',
+        summary: finalTranscript,
         content: `## Transcribed Audio\n\n${finalTranscript}`,
         type: 'voice',
         tags: ['Voice Note', 'Meeting'],
-        keyTakeaways: [finalTranscript || 'Recorded audio snippet'],
+        keyTakeaways: [finalTranscript],
         actionItems: [{ id: `act-${Date.now()}`, text: 'Review transcription', completed: false }],
         createdAt: new Date().toISOString(),
         durationSeconds: seconds || 15,
@@ -299,7 +306,7 @@ export const VoiceRecorderModal: React.FC<VoiceRecorderModalProps> = ({
           <div className="mt-2 mb-6">
             <div className="flex items-center justify-between text-xs text-slate-500 mb-2 font-medium">
               <span className="flex items-center gap-1 font-bold"><Volume2 className="w-3.5 h-3.5 text-indigo-600" /> Live Speech Transcription</span>
-              <span className="text-[11px] text-slate-400">Gemini Live</span>
+              <span className="text-[11px] text-slate-400">Gemini Live + server fallback</span>
             </div>
 
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 min-h-[90px] max-h-[140px] overflow-y-auto text-slate-800 text-xs leading-relaxed">
