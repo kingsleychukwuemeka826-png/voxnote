@@ -22,6 +22,7 @@ type Controller = {
   pause: () => void;
   resume: () => void;
   stop: () => Promise<Blob | null>;
+  enhanceTranscript: (fallbackTranscript: string) => Promise<string | null>;
 };
 
 declare global {
@@ -65,42 +66,58 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
   const emitFinalText = (text: string) => {
     const cleaned = text.trim();
     if (!cleaned) return;
-
-    // Chrome can replay the last finalized phrase when a continuous
-    // SpeechRecognition session ends and is recreated. Ignore the exact same
-    // phrase when it arrives again within a short reconnect window.
     const now = Date.now();
     if (cleaned === lastEmittedFinal && now - lastEmittedAt < 5000) return;
-
     lastEmittedFinal = cleaned;
     lastEmittedAt = now;
     finalTranscript = `${finalTranscript}${finalTranscript ? ' ' : ''}${cleaned}`.trim();
     options.onText(cleaned);
   };
 
+  const getRecordingBlob = () => chunks.length
+    ? new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' })
+    : null;
+
+  const enhanceTranscript = async (fallbackTranscript: string): Promise<string | null> => {
+    const blob = getRecordingBlob();
+    if (!blob || blob.size === 0) return null;
+    try {
+      const reader = new FileReader();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      const response = await fetch('/api/transcribe-meeting-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64: dataUrl, mimeType: blob.type || 'audio/webm', fallbackTranscript }),
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      const enhanced = typeof data.transcript === 'string' ? data.transcript.trim() : '';
+      return enhanced || null;
+    } catch (error) {
+      console.warn('Enhanced audio transcription unavailable:', error);
+      return null;
+    }
+  };
+
   const startRecognition = () => {
     if (!Ctor || stopped || paused || recognition) return;
-
     const instance = new Ctor();
     instance.continuous = true;
     instance.interimResults = true;
     instance.lang = 'en-US';
     instance.maxAlternatives = 1;
-
     instance.onresult = (event: any) => {
       let finalText = '';
-
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i]?.[0]?.transcript || '';
-        // IMPORTANT: never append interim results to the saved transcript.
-        // Chrome emits interim results repeatedly while a person is speaking,
-        // which previously caused phrases to appear many times in Voxnote.
         if (event.results[i]?.isFinal) finalText += `${text} `;
       }
-
       if (finalText.trim()) emitFinalText(finalText);
     };
-
     instance.onerror = (event: any) => {
       const code = event?.error;
       if (code === 'not-allowed' || code === 'service-not-allowed') {
@@ -108,11 +125,7 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
       } else if (code && !['no-speech', 'aborted', 'audio-capture', 'network'].includes(code)) {
         options.onError?.(`Live transcription warning: ${code}`);
       }
-      // `network` is a transient browser speech-service condition. The
-      // recognition `onend` handler will reconnect, so don't show it as an
-      // error underneath the transcript.
     };
-
     instance.onend = () => {
       if (recognition === instance) recognition = null;
       if (!stopped && !paused && Ctor) {
@@ -122,11 +135,8 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
         }, 250);
       }
     };
-
     recognition = instance;
-    try {
-      instance.start();
-    } catch {
+    try { instance.start(); } catch {
       recognition = null;
       if (!stopped && !paused) {
         restartTimer = setTimeout(() => {
@@ -137,17 +147,13 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
     }
   };
 
-  if (!Ctor) {
-    options.onError?.('Live speech transcription is not supported in this browser. Please use the latest Chrome or Edge.');
-  }
+  if (!Ctor) options.onError?.('Live speech transcription is not supported in this browser. Please use the latest Chrome or Edge.');
 
   if (typeof window.MediaRecorder !== 'undefined') {
     try {
       const preferredType = ['audio/webm', 'audio/mp4', 'audio/ogg'].find(type => MediaRecorder.isTypeSupported(type));
       recorder = new MediaRecorder(stream, preferredType ? { mimeType: preferredType } : undefined);
-      recorder.ondataavailable = event => {
-        if (event.data?.size) chunks.push(event.data);
-      };
+      recorder.ondataavailable = event => { if (event.data?.size) chunks.push(event.data); };
       recorder.start(1000);
     } catch {
       options.onError?.('Audio recording could not start. The transcript can still be saved.');
@@ -173,9 +179,7 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
       };
       update();
     }
-  } catch {
-    // Visualizer is optional.
-  }
+  } catch {}
 
   startRecognition();
 
@@ -184,44 +188,31 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
       if (stopped) return;
       paused = true;
       if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
-      if (recognition) {
-        try { recognition.stop(); } catch { /* ignore */ }
-        recognition = null;
-      }
-      if (recorder?.state === 'recording') {
-        try { recorder.pause(); } catch { /* ignore */ }
-      }
+      if (recognition) { try { recognition.stop(); } catch {} recognition = null; }
+      if (recorder?.state === 'recording') { try { recorder.pause(); } catch {} }
     },
     resume() {
       if (stopped) return;
       paused = false;
-      if (recorder?.state === 'paused') {
-        try { recorder.resume(); } catch { /* ignore */ }
-      }
+      if (recorder?.state === 'paused') { try { recorder.resume(); } catch {} }
       startRecognition();
     },
     async stop() {
-      if (stopped) return chunks.length ? new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' }) : null;
+      if (stopped) return getRecordingBlob();
       stopped = true;
       paused = false;
       if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
       cleanupRecognition();
       if (animationFrame) cancelAnimationFrame(animationFrame);
       analyser = null;
-      if (audioContext && audioContext.state !== 'closed') {
-        try { await audioContext.close(); } catch { /* ignore */ }
-      }
+      if (audioContext && audioContext.state !== 'closed') { try { await audioContext.close(); } catch {} }
       stream.getTracks().forEach(track => track.stop());
-
-      const blob = await new Promise<Blob | null>(resolve => {
-        if (!recorder || recorder.state === 'inactive') {
-          resolve(chunks.length ? new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' }) : null);
-          return;
-        }
-        recorder.onstop = () => resolve(chunks.length ? new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' }) : null);
-        try { recorder.stop(); } catch { resolve(null); }
+      return await new Promise<Blob | null>(resolve => {
+        if (!recorder || recorder.state === 'inactive') { resolve(getRecordingBlob()); return; }
+        recorder.onstop = () => resolve(getRecordingBlob());
+        try { recorder.stop(); } catch { resolve(getRecordingBlob()); }
       });
-      return blob;
-    }
+    },
+    enhanceTranscript,
   };
 }
