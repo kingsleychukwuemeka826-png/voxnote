@@ -1,0 +1,1 @@
+This branch hardens mobile/local voice transcription by using final speech results only, falling back to server-side audio transcription when live recognition is unavailable, and surfacing transcription failures instead of silently saving an untranscribed note.
