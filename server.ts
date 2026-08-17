@@ -13,9 +13,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 
-function getPaystackSecretKey(): string | null {
-  return process.env.PAYSTACK_SECRET_KEY || null;
-}
+function getPaystackSecretKey(): string | null { return process.env.PAYSTACK_SECRET_KEY || null; }
 
 async function paystackRequest(path: string, options: { method?: string; body?: object } = {}) {
   const key = getPaystackSecretKey();
@@ -34,21 +32,20 @@ function getAdminDb() {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!raw) return null;
   try {
-    if (getApps().length === 0) {
-      const serviceAccount = JSON.parse(raw);
-      initAdminApp({ credential: cert(serviceAccount) });
-    }
+    if (getApps().length === 0) initAdminApp({ credential: cert(JSON.parse(raw)) });
     return getAdminFirestore();
-  } catch (e) {
-    console.error('Failed to initialize Firebase Admin:', e);
-    return null;
-  }
+  } catch (e) { console.error('Failed to initialize Firebase Admin:', e); return null; }
 }
 
 async function findActivePaystackSubscription(customerCode: string) {
   const result = await paystackRequest(`/subscription?customer=${encodeURIComponent(customerCode)}`);
   const subscriptions = Array.isArray(result.data) ? result.data : [];
-  return subscriptions.find((sub: any) => ['active', 'attention'].includes(String(sub.status).toLowerCase())) || subscriptions.find((sub: any) => sub.status === 'active') || null;
+  return subscriptions.find((sub: any) => String(sub.status).toLowerCase() === 'active') || null;
+}
+
+async function findPaystackCustomer(email: string) {
+  const result = await paystackRequest(`/customer/${encodeURIComponent(email)}`);
+  return result.data || null;
 }
 
 app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -57,28 +54,20 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), as
   const signature = req.headers['x-paystack-signature'] as string | undefined;
   const expectedHash = crypto.createHmac('sha512', secretKey).update(req.body).digest('hex');
   if (!signature || signature !== expectedHash) return res.status(400).send('Invalid signature');
-
   let event: any;
-  try { event = JSON.parse(req.body.toString('utf8')); }
-  catch { return res.status(400).send('Invalid payload'); }
-
+  try { event = JSON.parse(req.body.toString('utf8')); } catch { return res.status(400).send('Invalid payload'); }
   const db = getAdminDb();
   if (!db) return res.status(200).json({ received: true, warning: 'FIREBASE_SERVICE_ACCOUNT not set' });
-
   try {
     const data = event.data || {};
     const customerCode = data.customer?.customer_code;
-
     if (event.event === 'charge.success') {
       const uid = data.metadata?.uid;
       if (uid && customerCode) {
         await db.doc(`paystackCustomers/${customerCode}`).set({ uid }, { merge: true });
         const billingRef = db.doc(`users/${uid}/meta/billing`);
         const existing = (await billingRef.get()).data() || {};
-        const subscription = await findActivePaystackSubscription(customerCode).catch((err) => {
-          console.error('Could not recover subscription after charge.success:', err.message);
-          return null;
-        });
+        const subscription = await findActivePaystackSubscription(customerCode).catch(() => null);
         await billingRef.set({
           isProPlan: true,
           paystackCustomerCode: customerCode,
@@ -92,23 +81,17 @@ app.post('/api/webhooks/paystack', express.raw({ type: 'application/json' }), as
       if (customerCode) {
         const mappingDoc = await db.doc(`paystackCustomers/${customerCode}`).get();
         const uid = mappingDoc.data()?.uid || data.metadata?.uid;
-        if (uid) {
-          const isActive = event.event === 'subscription.create' && data.status === 'active';
-          await db.doc(`users/${uid}/meta/billing`).set({
-            isProPlan: isActive,
-            paystackCustomerCode: customerCode,
-            paystackSubscriptionCode: data.subscription_code,
-            status: data.status,
-            updatedAt: new Date().toISOString(),
-          }, { merge: true });
-        }
+        if (uid) await db.doc(`users/${uid}/meta/billing`).set({
+          isProPlan: event.event === 'subscription.create' && data.status === 'active',
+          paystackCustomerCode: customerCode,
+          paystackSubscriptionCode: data.subscription_code,
+          status: data.status,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
       }
     }
     res.json({ received: true });
-  } catch (err: any) {
-    console.error('Error handling Paystack webhook:', err);
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err: any) { console.error('Error handling Paystack webhook:', err); res.status(500).json({ error: err.message }); }
 });
 
 app.use(express.json({ limit: '25mb' }));
@@ -121,38 +104,39 @@ app.post('/api/billing/create-checkout-session', async (req, res) => {
     const planCode = plan === 'annual' ? process.env.PAYSTACK_PLAN_ANNUAL : process.env.PAYSTACK_PLAN_MONTHLY;
     if (!planCode) return res.status(500).json({ error: `Missing PAYSTACK_PLAN_${plan.toUpperCase()} env var.` });
     const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
-    const result = await paystackRequest('/transaction/initialize', {
-      method: 'POST',
-      body: { email, plan: planCode, callback_url: `${appUrl}?billing=success`, metadata: { uid, plan } },
-    });
+    const result = await paystackRequest('/transaction/initialize', { method: 'POST', body: { email, plan: planCode, callback_url: `${appUrl}?billing=success`, metadata: { uid, plan } } });
     res.json({ configured: true, url: result.data.authorization_url });
-  } catch (err: any) {
-    console.error('Error creating Paystack checkout:', err);
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err: any) { console.error('Error creating Paystack checkout:', err); res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/billing/create-portal-session', async (req, res) => {
   if (!getPaystackSecretKey()) return res.status(200).json({ configured: false });
   try {
-    const { uid } = req.body as { uid: string };
+    const { uid, email } = req.body as { uid: string; email?: string };
     if (!uid) return res.status(400).json({ error: 'uid is required.' });
     const db = getAdminDb();
     if (!db) return res.status(500).json({ error: 'Firebase Admin is not configured — cannot look up billing record.' });
 
     const billingRef = db.doc(`users/${uid}/meta/billing`);
-    const billingDoc = await billingRef.get();
-    const billing = billingDoc.data() || {};
+    const billing = (await billingRef.get()).data() || {};
+    let customerCode = billing.paystackCustomerCode as string | undefined;
     let subscriptionCode = billing.paystackSubscriptionCode as string | undefined;
 
-    // Recover missing subscription codes from Paystack using the customer code.
-    // This handles webhook ordering and older accounts created before the code
-    // was persisted to Firestore.
-    if (!subscriptionCode && billing.paystackCustomerCode) {
-      const subscription = await findActivePaystackSubscription(billing.paystackCustomerCode);
+    // Recover the Paystack customer directly from the signed-in email when the
+    // webhook mapping is missing. Paystack supports fetching a customer by email.
+    if (!customerCode && email) {
+      const customer = await findPaystackCustomer(email);
+      customerCode = customer?.customer_code;
+      if (customerCode) await billingRef.set({ paystackCustomerCode: customerCode }, { merge: true });
+    }
+
+    // Once we know the customer, ask Paystack for that customer's subscriptions.
+    if (!subscriptionCode && customerCode) {
+      const subscription = await findActivePaystackSubscription(customerCode);
       if (subscription?.subscription_code) {
         subscriptionCode = subscription.subscription_code;
         await billingRef.set({
+          paystackCustomerCode: customerCode,
           paystackSubscriptionCode: subscriptionCode,
           status: subscription.status,
           isProPlan: true,
@@ -162,13 +146,9 @@ app.post('/api/billing/create-portal-session', async (req, res) => {
     }
 
     if (!subscriptionCode) return res.status(404).json({ error: 'No active Paystack subscription found for this account yet.' });
-
     const result = await paystackRequest(`/subscription/${encodeURIComponent(subscriptionCode)}/manage/link`);
     res.json({ configured: true, url: result.data.link });
-  } catch (err: any) {
-    console.error('Error creating Paystack manage link:', err);
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err: any) { console.error('Error creating Paystack manage link:', err); res.status(500).json({ error: err.message }); }
 });
 
 function getGeminiClient() {
