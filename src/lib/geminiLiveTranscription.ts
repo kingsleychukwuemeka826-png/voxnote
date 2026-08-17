@@ -43,6 +43,8 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
   let animationFrame = 0;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
   let finalTranscript = '';
+  let lastEmittedFinal = '';
+  let lastEmittedAt = 0;
 
   const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -60,6 +62,22 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
     }
   };
 
+  const emitFinalText = (text: string) => {
+    const cleaned = text.trim();
+    if (!cleaned) return;
+
+    // Chrome can replay the last finalized phrase when a continuous
+    // SpeechRecognition session ends and is recreated. Ignore the exact same
+    // phrase when it arrives again within a short reconnect window.
+    const now = Date.now();
+    if (cleaned === lastEmittedFinal && now - lastEmittedAt < 5000) return;
+
+    lastEmittedFinal = cleaned;
+    lastEmittedAt = now;
+    finalTranscript = `${finalTranscript}${finalTranscript ? ' ' : ''}${cleaned}`.trim();
+    options.onText(cleaned);
+  };
+
   const startRecognition = () => {
     if (!Ctor || stopped || paused || recognition) return;
 
@@ -70,28 +88,29 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
     instance.maxAlternatives = 1;
 
     instance.onresult = (event: any) => {
-      let interim = '';
       let finalText = '';
+
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i]?.[0]?.transcript || '';
-        if (event.results[i]?.isFinal) finalText += text;
-        else interim += text;
+        // IMPORTANT: never append interim results to the saved transcript.
+        // Chrome emits interim results repeatedly while a person is speaking,
+        // which previously caused phrases to appear many times in Voxnote.
+        if (event.results[i]?.isFinal) finalText += `${text} `;
       }
-      const cleanFinal = finalText.trim();
-      if (cleanFinal) {
-        finalTranscript = `${finalTranscript}${finalTranscript ? ' ' : ''}${cleanFinal}`.trim();
-        options.onText(cleanFinal);
-      }
-      if (interim) options.onText(interim.trim());
+
+      if (finalText.trim()) emitFinalText(finalText);
     };
 
     instance.onerror = (event: any) => {
       const code = event?.error;
       if (code === 'not-allowed' || code === 'service-not-allowed') {
         options.onError?.('Microphone/speech recognition permission was denied. Please allow microphone access and try again.');
-      } else if (code && !['no-speech', 'aborted', 'audio-capture'].includes(code)) {
+      } else if (code && !['no-speech', 'aborted', 'audio-capture', 'network'].includes(code)) {
         options.onError?.(`Live transcription warning: ${code}`);
       }
+      // `network` is a transient browser speech-service condition. The
+      // recognition `onend` handler will reconnect, so don't show it as an
+      // error underneath the transcript.
     };
 
     instance.onend = () => {
@@ -130,7 +149,7 @@ export async function startGeminiLiveTranscription(options: Options): Promise<Co
         if (event.data?.size) chunks.push(event.data);
       };
       recorder.start(1000);
-    } catch (error) {
+    } catch {
       options.onError?.('Audio recording could not start. The transcript can still be saved.');
     }
   }
